@@ -31,6 +31,7 @@ final class BubbleModel: ObservableObject {
     private static let signedInUserIdKey = "StickerBubble.signedInUserId"
     private static let localDisplayNameKey = "StickerBubble.localDisplayName"
     private static let sendToSelfEnabledKey = "StickerBubble.sendToSelfEnabled"
+    private static let lastSelectedPeerKeyPrefix = "StickerBubble.lastSelectedPeer"
 
     /// Per-account ordered list of peer user IDs shown as quick-pick chips on the bubble (local only).
     @Published private(set) var favoritePeerUserIdsOrdered: [String] = []
@@ -82,7 +83,9 @@ final class BubbleModel: ObservableObject {
     @Published private(set) var addContactPeerLookup: AddContactPeerLookupState = .idle
     @Published var inboxTriageList: [RailwayInboxMessage] = []
     /// Peer **user-id** (handle) to send to.
-    @Published var selectedPeerUserId: String = ""
+    @Published var selectedPeerUserId: String = "" {
+        didSet { saveLastSelectedPeer() }
+    }
     @Published var lastRailwayError: String?
     @Published private(set) var lastInboxMessageId: Int64 = 0
 
@@ -130,6 +133,7 @@ final class BubbleModel: ObservableObject {
         }
         restoreSourceFolder()
         loadFavoritePeerIdsForCurrentAccount()
+        loadLastSelectedPeerForCurrentAccount()
         startRailwayPollIfConfigured()
     }
 
@@ -150,6 +154,22 @@ final class BubbleModel: ObservableObject {
             return
         }
         favoritePeerUserIdsOrdered = decoded
+    }
+
+    private static func lastSelectedPeerKey(accountUserId: String) -> String {
+        let slug = accountUserId.trimmingCharacters(in: .whitespacesAndNewlines)
+        return slug.isEmpty ? "\(lastSelectedPeerKeyPrefix).__guest__" : "\(lastSelectedPeerKeyPrefix).\(slug)"
+    }
+
+    private func loadLastSelectedPeerForCurrentAccount() {
+        let key = Self.lastSelectedPeerKey(accountUserId: signedInUserId)
+        selectedPeerUserId = UserDefaults.standard.string(forKey: key) ?? ""
+    }
+
+    private func saveLastSelectedPeer() {
+        guard !signedInUserId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let key = Self.lastSelectedPeerKey(accountUserId: signedInUserId)
+        UserDefaults.standard.set(selectedPeerUserId, forKey: key)
     }
 
     private func saveFavoritePeerIdsForCurrentAccount() {
@@ -222,6 +242,7 @@ final class BubbleModel: ObservableObject {
         UserDefaults.standard.set(token, forKey: Self.authTokenKey)
         UserDefaults.standard.set(userId, forKey: Self.signedInUserIdKey)
         loadFavoritePeerIdsForCurrentAccount()
+        loadLastSelectedPeerForCurrentAccount()
     }
 
     func signOut() {
