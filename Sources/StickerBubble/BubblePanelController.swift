@@ -135,26 +135,37 @@ final class BubblePanelController: NSObject {
 
     private func centerPanel() {
         guard let screen = NSScreen.main else { return }
-        let frame = screen.visibleFrame
+        let vf = screen.visibleFrame
         let size = panel.frame.size
-        let x = frame.midX - size.width / 2
-        let y = frame.midY - size.height / 2
-        panel.setFrameOrigin(NSPoint(x: x, y: y))
+        let origin = NSPoint(x: vf.midX - size.width / 2, y: vf.midY - size.height / 2)
+        let centered = NSRect(origin: origin, size: size)
+        panel.setFrameOrigin(clampedFrame(centered, to: vf).origin)
     }
 
     private func resizePanelToFitContent() {
         hostingView.invalidateIntrinsicContentSize()
         hostingView.layoutSubtreeIfNeeded()
 
+        let screen = panel.screen ?? NSScreen.main
+        let vf = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let fitting = hostingView.fittingSize
-        let visibleH = NSScreen.main?.visibleFrame.height ?? 900
         let width = max(360, min(560, fitting.width))
-        let height = max(260, min(visibleH * 0.93, fitting.height))
+        let height = max(260, min(vf.height * 0.93, fitting.height))
         var frame = panel.frame
         let deltaY = frame.height - height
         frame.size = NSSize(width: width, height: height)
         frame.origin.y += deltaY
-        panel.setFrame(frame, display: true)
+        panel.setFrame(clampedFrame(frame, to: vf), display: true)
+    }
+
+    private func clampedFrame(_ frame: NSRect, to vf: NSRect) -> NSRect {
+        var f = frame
+        // Horizontal
+        f.origin.x = max(vf.minX, min(f.origin.x, vf.maxX - f.width))
+        // Vertical: push up if bottom clips, then push down if top still clips
+        if f.origin.y < vf.minY { f.origin.y = vf.minY }
+        if f.origin.y + f.height > vf.maxY { f.origin.y = vf.maxY - f.height }
+        return f
     }
 
     // MARK: - Drag to move window (any non-control surface)
