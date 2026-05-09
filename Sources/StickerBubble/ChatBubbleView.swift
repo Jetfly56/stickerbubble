@@ -193,12 +193,12 @@ struct ChatBubbleView: View {
                 StickerDisplay(source: source)
                     .padding(.horizontal, 12)
                     .padding(.top, 44)
-                    .padding(.bottom, 318)
+                    .padding(.bottom, model.isReceivingMode ? 44 : 318)
             } else {
                 emptyDropZone
                     .padding(.horizontal, 12)
                     .padding(.top, 40)
-                    .padding(.bottom, 306)
+                    .padding(.bottom, model.isReceivingMode ? 40 : 306)
             }
         }
         .frame(width: StickerCardLayout.defaultFrameWidth)

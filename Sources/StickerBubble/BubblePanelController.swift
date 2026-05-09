@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// Standard `NSPanel` returns `false` from `canBecomeKey`, so embedded controls (e.g. `TextField`) never get keyboard focus.
@@ -16,6 +17,7 @@ final class BubblePanelController: NSObject {
     private var mouseDownMonitor: Any?
     private var mouseDraggedMonitor: Any?
     private var mouseUpMonitor: Any?
+    private var cancellables = Set<AnyCancellable>()
 
     /// Screen-space anchor when a drag that may move the window began.
     private var windowDragScreenAnchor: NSPoint?
@@ -63,6 +65,16 @@ final class BubblePanelController: NSObject {
         model.onStickerChanged = { [weak self] in
             self?.resizePanelToFitContent()
         }
+
+        model.$isReceivingMode
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    self?.resizePanelToFitContent()
+                }
+            }
+            .store(in: &cancellables)
         model.onSendSuccess = { [weak self] in
             self?.hide()
         }
