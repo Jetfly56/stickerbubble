@@ -30,6 +30,7 @@ final class BubbleModel: ObservableObject {
     private static let authTokenKey = "StickerBubble.authToken"
     private static let signedInUserIdKey = "StickerBubble.signedInUserId"
     private static let localDisplayNameKey = "StickerBubble.localDisplayName"
+    private static let sendToSelfEnabledKey = "StickerBubble.sendToSelfEnabled"
 
     /// Per-account ordered list of peer user IDs shown as quick-pick chips on the bubble (local only).
     @Published private(set) var favoritePeerUserIdsOrdered: [String] = []
@@ -63,6 +64,9 @@ final class BubbleModel: ObservableObject {
     /// Shown in UI and sent with messages; synced to server profile when signed in.
     @Published var localDisplayName: String = UserDefaults.standard.string(forKey: BubbleModel.localDisplayNameKey) ?? ""
 
+    @Published var sendToSelfEnabled: Bool = UserDefaults.standard.bool(forKey: BubbleModel.sendToSelfEnabledKey) {
+        didSet { UserDefaults.standard.set(sendToSelfEnabled, forKey: Self.sendToSelfEnabledKey) }
+    }
     @Published var remoteContacts: [RailwayRemoteContact] = []
     @Published var incomingContactRequests: [RailwayContactRequestIncoming] = []
     @Published var outgoingContactRequests: [RailwayContactRequestOutgoing] = []

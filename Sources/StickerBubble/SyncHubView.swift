@@ -343,6 +343,8 @@ struct SyncHubView: View {
     private var contactsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Contacts")
+            Toggle("Show \"Me\" chip for sending to yourself", isOn: $model.sendToSelfEnabled)
+                .font(.subheadline)
             if let notice = model.contactInviteNotice, !notice.isEmpty {
                 Text(notice)
                     .font(.caption)

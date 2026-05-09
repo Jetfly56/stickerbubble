@@ -137,7 +137,7 @@ struct ChatBubbleView: View {
                 .fixedSize(horizontal: false, vertical: true)
             } else {
                 let favorites = model.favoriteContactsForBubbleBar()
-                if favorites.isEmpty {
+                if favorites.isEmpty && !model.sendToSelfEnabled {
                     Text("Open Contacts (two-person icon) and tap the star on someone to pin them here for quick send.")
                         .font(.system(.caption2, design: .rounded))
                         .foregroundStyle(.tertiary)
@@ -145,6 +145,9 @@ struct ChatBubbleView: View {
                 } else {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
+                            if model.sendToSelfEnabled {
+                                meChip
+                            }
                             ForEach(favorites, id: \.peerUserId) { c in
                                 favoriteContactChip(c)
                             }
@@ -385,6 +388,28 @@ struct ChatBubbleView: View {
         let letters = parts.prefix(2).compactMap { $0.first }
         let s = String(letters).uppercased()
         return s.isEmpty ? "?" : s
+    }
+
+    private var meChip: some View {
+        let selected = model.selectedPeerUserId == model.signedInUserId
+        return Button {
+            model.selectedPeerUserId = model.signedInUserId
+        } label: {
+            Text("Me")
+                .font(.system(.caption, design: .rounded, weight: .semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background {
+                    Capsule()
+                        .fill(selected ? Color.accentColor.opacity(0.22) : Color.primary.opacity(0.06))
+                }
+                .overlay {
+                    Capsule()
+                        .strokeBorder(selected ? Color.accentColor.opacity(0.9) : Color.clear, lineWidth: 1.5)
+                }
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
