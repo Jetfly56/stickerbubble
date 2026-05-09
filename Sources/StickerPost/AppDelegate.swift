@@ -43,9 +43,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let bar = NSMenu()
 
         let appPullDown = NSMenuItem()
-        appPullDown.title = "StickerBubble"
+        appPullDown.title = "StickerPost"
         appPullDown.submenu = buildAppMenu()
         bar.addItem(appPullDown)
+
+        let bubblePullDown = NSMenuItem(title: "Bubble", action: nil, keyEquivalent: "")
+        bubblePullDown.submenu = buildBubbleMenu()
+        bar.addItem(bubblePullDown)
 
         let editPullDown = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
         editPullDown.submenu = buildEditMenu()
@@ -57,22 +61,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func buildAppMenu() -> NSMenu {
         let appMenu = NSMenu()
 
-        appMenu.addItem(withTitle: "Show bubble", action: #selector(showBubble), keyEquivalent: "b")
-        appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Hide bubble", action: #selector(hideBubble), keyEquivalent: "h")
-        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Settings…", action: #selector(openAccountAndSync), keyEquivalent: "")
         appMenu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
         appMenu.addItem(.separator())
-        let pasteSticker = NSMenuItem(
-            title: "Paste as sticker",
-            action: #selector(pasteAsSticker),
-            keyEquivalent: "v"
-        )
-        pasteSticker.keyEquivalentModifierMask = [.command, .shift]
-        appMenu.addItem(pasteSticker)
-        appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit StickerBubble", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "Quit StickerPost", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         for item in appMenu.items {
             guard !item.isSeparatorItem, let action = item.action else { continue }
@@ -84,6 +76,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         return appMenu
+    }
+
+    private func buildBubbleMenu() -> NSMenu {
+        let menu = NSMenu(title: "Bubble")
+
+        menu.addItem(withTitle: "Show Bubble", action: #selector(showBubble), keyEquivalent: "b")
+        menu.addItem(withTitle: "Hide Bubble", action: #selector(hideBubble), keyEquivalent: "h")
+
+        let escHide = NSMenuItem(title: "Hide on Escape", action: #selector(hideBubble), keyEquivalent: "\u{1B}")
+        escHide.keyEquivalentModifierMask = []
+        menu.addItem(escHide)
+
+        menu.addItem(.separator())
+
+        let send = NSMenuItem(title: "Send", action: #selector(sendCurrent), keyEquivalent: "\r")
+        send.keyEquivalentModifierMask = .command
+        menu.addItem(send)
+
+        let pasteSticker = NSMenuItem(title: "Paste as Sticker", action: #selector(pasteAsSticker), keyEquivalent: "v")
+        pasteSticker.keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(pasteSticker)
+
+        menu.addItem(withTitle: "Copy Sticker (⌘C when bubble focused)", action: #selector(copySticker), keyEquivalent: "")
+        menu.addItem(withTitle: "Save Sticker to Folder", action: #selector(saveSticker), keyEquivalent: "s")
+        menu.addItem(withTitle: "Fit / Natural Size", action: #selector(toggleFit), keyEquivalent: "f")
+
+        for item in menu.items where !item.isSeparatorItem {
+            item.target = self
+        }
+
+        return menu
     }
 
     private func buildEditMenu() -> NSMenu {
@@ -120,6 +143,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func pasteAsSticker() {
         bubbleController?.pasteStickerFromPasteboard()
+    }
+
+    @objc private func sendCurrent() {
+        guard let bc = bubbleController else { return }
+        Task { await bc.model.performSend() }
+    }
+
+    @objc private func copySticker() {
+        bubbleController?.model.copyCurrentStickerToPasteboard()
+    }
+
+    @objc private func saveSticker() {
+        guard let bc = bubbleController else { return }
+        Task { await bc.model.saveCurrentStickerToSourceFolder() }
+    }
+
+    @objc private func toggleFit() {
+        bubbleController?.model.stickerExpanded.toggle()
     }
 
     @objc private func checkForUpdates() {

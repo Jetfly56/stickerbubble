@@ -3,7 +3,7 @@ import Foundation
 
 @MainActor
 final class AppUpdater {
-    static let currentVersion = "1.0.4"
+    static let currentVersion = "1.1.0"
 
     private static let apiURL = URL(
         string: "https://api.github.com/repos/Jetfly56/stickerbubble/releases/latest"
@@ -30,7 +30,7 @@ final class AppUpdater {
                     }
                     offerInstall(version: tag, downloadURL: asset.browserDownloadUrl)
                 } else if !silent {
-                    showAlert("StickerBubble \(Self.currentVersion) is up to date.")
+                    showAlert("StickerPost \(Self.currentVersion) is up to date.")
                 }
             } catch {
                 if !silent {
@@ -55,7 +55,7 @@ final class AppUpdater {
 
     private func offerInstall(version: String, downloadURL: String) {
         let a = NSAlert()
-        a.messageText = "StickerBubble \(version) Available"
+        a.messageText = "StickerPost \(version) Available"
         a.informativeText = "You have version \(Self.currentVersion). Install update and relaunch?"
         a.addButton(withTitle: "Install Update")
         a.addButton(withTitle: "Later")
@@ -93,7 +93,7 @@ final class AppUpdater {
             backing: .buffered,
             defer: false
         )
-        w.title = "StickerBubble Update"
+        w.title = "StickerPost Update"
         w.level = .modalPanel
         w.isReleasedWhenClosed = false
         w.center()

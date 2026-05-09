@@ -91,10 +91,9 @@ struct StickerDisplay: View {
             expanded.toggle()
         } label: {
             Image(systemName: expanded ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.white)
-                .padding(6)
-                .background(Color.black.opacity(0.55), in: Circle())
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .diffuseCircleBackdrop(size: 26)
         }
         .buttonStyle(.plain)
         .help(expanded ? "Show at natural size" : "Scale to fit frame")

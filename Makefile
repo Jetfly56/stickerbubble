@@ -1,7 +1,8 @@
-APP      = StickerBubble
+APP      = StickerPost
+TARGET   = StickerPost
 BUNDLE   = $(APP).app
-BINARY   = .build/release/$(APP)
-UPDATER  = Sources/StickerBubble/AppUpdater.swift
+BINARY   = .build/release/$(TARGET)
+UPDATER  = Sources/$(TARGET)/AppUpdater.swift
 
 # Read version from source; overridden by `make release VERSION=x.y.z`
 VERSION := $(shell grep 'currentVersion' $(UPDATER) | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
@@ -39,6 +40,7 @@ app: $(BINARY) AppIcon.icns
   <key>CFBundleExecutable</key>      <string>$(APP)</string>\n\
   <key>CFBundleIdentifier</key>      <string>com.stickerbubble.app</string>\n\
   <key>CFBundleName</key>            <string>$(APP)</string>\n\
+  <key>CFBundleDisplayName</key>     <string>$(APP)</string>\n\
   <key>CFBundleIconFile</key>        <string>AppIcon</string>\n\
   <key>CFBundleVersion</key>         <string>$(VERSION)</string>\n\
   <key>CFBundleShortVersionString</key><string>$(VERSION)</string>\n\

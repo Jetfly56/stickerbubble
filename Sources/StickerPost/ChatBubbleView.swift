@@ -228,6 +228,7 @@ struct ChatBubbleView: View {
                         .symbolRenderingMode(.hierarchical)
                         .foregroundStyle(isCloseHovered ? Color.red : Color.secondary)
                         .font(.system(size: 18, weight: .medium))
+                        .diffuseCircleBackdrop()
                 }
                 .buttonStyle(.plain)
                 .onHover { isCloseHovered = $0 }
@@ -241,6 +242,7 @@ struct ChatBubbleView: View {
                             .symbolRenderingMode(.hierarchical)
                             .foregroundStyle(isSettingsHovered ? Color.purple : Color.secondary)
                             .font(.system(size: 18, weight: .medium))
+                            .diffuseCircleBackdrop()
                         if !model.incomingContactRequests.isEmpty {
                             Circle()
                                 .fill(Color.red.opacity(0.95))
@@ -261,6 +263,7 @@ struct ChatBubbleView: View {
                         .symbolRenderingMode(.hierarchical)
                         .foregroundStyle(active ? Color(red: 0.70, green: 0.45, blue: 0.05) : Color.secondary)
                         .font(.system(size: 18, weight: .medium))
+                        .diffuseCircleBackdrop()
                 }
                 .buttonStyle(.plain)
                 .onHover { isMuteHovered = $0 }
@@ -279,6 +282,7 @@ struct ChatBubbleView: View {
                         .symbolRenderingMode(.hierarchical)
                         .font(.system(size: 20, weight: .medium))
                         .foregroundStyle(.secondary)
+                        .diffuseCircleBackdrop(size: 30)
                 }
                 .buttonStyle(.plain)
                 .help("Choose sticker folder")
@@ -303,6 +307,7 @@ struct ChatBubbleView: View {
                     Image(systemName: "globe")
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(.secondary)
+                        .diffuseCircleBackdrop()
                 }
                 .buttonStyle(.plain)
                 .help("Web stickers · Reddit / Giphy")
@@ -314,6 +319,7 @@ struct ChatBubbleView: View {
                         Image(systemName: "square.grid.2x2")
                             .font(.system(size: 17, weight: .semibold))
                             .foregroundStyle(.secondary)
+                            .diffuseCircleBackdrop()
                     }
                     .buttonStyle(.plain)
                     .help("Open sticker grid (\(model.folderImageURLs.count))")
@@ -327,6 +333,7 @@ struct ChatBubbleView: View {
                         Image(systemName: "square.and.arrow.down")
                             .font(.system(size: 17, weight: .semibold))
                             .foregroundStyle(.secondary)
+                            .diffuseCircleBackdrop()
                     }
                     .buttonStyle(.plain)
                     .help("Save sticker to folder")
@@ -339,6 +346,7 @@ struct ChatBubbleView: View {
                         Image(systemName: "doc.on.doc")
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(.secondary)
+                            .diffuseCircleBackdrop(size: 26)
                     }
                     .buttonStyle(.plain)
                     .help("Copy sticker to clipboard")
@@ -352,6 +360,7 @@ struct ChatBubbleView: View {
                             Image(systemName: "tray.full")
                                 .font(.system(size: 15, weight: .semibold))
                                 .foregroundStyle(.secondary)
+                                .diffuseCircleBackdrop(size: 26)
                             if !model.inboxTriageList.isEmpty {
                                 Circle()
                                     .fill(Color.red.opacity(0.95))
@@ -676,6 +685,17 @@ struct ChatBubbleView: View {
                 }
         }
         .buttonStyle(.plain)
+    }
+}
+
+extension View {
+    func diffuseCircleBackdrop(size: CGFloat = 28) -> some View {
+        background {
+            Circle()
+                .fill(.ultraThinMaterial)
+                .frame(width: size, height: size)
+                .allowsHitTesting(false)
+        }
     }
 }
 
@@ -1154,3 +1174,4 @@ private struct InboxTriageRow: View {
         return NSImage(data: data)
     }
 }
+

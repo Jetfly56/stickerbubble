@@ -2,17 +2,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "StickerBubble",
+    name: "StickerPost",
     platforms: [
         .macOS(.v13),
     ],
     products: [
-        .executable(name: "StickerBubble", targets: ["StickerBubble"]),
+        .executable(name: "StickerPost", targets: ["StickerPost"]),
     ],
     targets: [
         .executableTarget(
-            name: "StickerBubble",
-            path: "Sources/StickerBubble"
+            name: "StickerPost",
+            path: "Sources/StickerPost"
         ),
     ]
 )

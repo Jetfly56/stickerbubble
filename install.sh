@@ -3,7 +3,7 @@ set -e
 
 REPO="Jetfly56/stickerbubble"
 INSTALL_DIR="$HOME/Applications"
-APP_NAME="StickerBubble.app"
+APP_NAME="StickerPost.app"
 
 echo "Fetching latest release..."
 DOWNLOAD_URL=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
@@ -17,7 +17,7 @@ if [ -z "$DOWNLOAD_URL" ]; then
 fi
 
 TMP_DIR=$(mktemp -d)
-ZIP="$TMP_DIR/StickerBubble.zip"
+ZIP="$TMP_DIR/StickerPost.zip"
 
 echo "Downloading $DOWNLOAD_URL..."
 curl -fsSL "$DOWNLOAD_URL" -o "$ZIP"

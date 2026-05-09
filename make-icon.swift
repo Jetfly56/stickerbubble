@@ -20,59 +20,182 @@ func makeIconPNG(pixelSize: Int) -> Data {
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
 
-    let rect = NSRect(x: 0, y: 0, width: size, height: size)
-    let cornerRadius = size * 0.225
+    let canvas = NSRect(x: 0, y: 0, width: size, height: size)
+    let canvasCornerRadius = size * 0.225
 
-    // Gradient background clipped to rounded rect
-    let bgPath = NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius)
+    // Rounded-square dark backdrop so the grey sticky note has contrast on light wallpapers.
     NSGraphicsContext.saveGraphicsState()
-    bgPath.addClip()
+    let backdrop = NSBezierPath(roundedRect: canvas, xRadius: canvasCornerRadius, yRadius: canvasCornerRadius)
+    backdrop.addClip()
     NSGradient(
         colors: [
-            NSColor(red: 0.18, green: 0.48, blue: 0.98, alpha: 1),
-            NSColor(red: 0.55, green: 0.18, blue: 0.88, alpha: 1)
+            NSColor(red: 0.20, green: 0.22, blue: 0.26, alpha: 1),
+            NSColor(red: 0.12, green: 0.13, blue: 0.16, alpha: 1)
         ],
         atLocations: [0, 1],
         colorSpace: .sRGB
-    )!.draw(in: rect, angle: -50)
+    )!.draw(in: canvas, angle: -90)
     NSGraphicsContext.restoreGraphicsState()
 
-    // Speech bubble body
-    let bInset = size * 0.16
-    let bBottom = size * 0.22
-    let bubbleRect = NSRect(
-        x: bInset,
-        y: bBottom,
-        width: size - bInset * 2,
-        height: size - bInset - bBottom - size * 0.04
+    // Sticky note geometry: centered, slight tilt, big peeled corner top-right.
+    let notePadding = size * 0.14
+    let noteRect = NSRect(
+        x: notePadding,
+        y: notePadding,
+        width: size - notePadding * 2,
+        height: size - notePadding * 2
     )
-    NSColor.white.withAlphaComponent(0.96).setFill()
-    NSBezierPath(roundedRect: bubbleRect, xRadius: size * 0.1, yRadius: size * 0.1).fill()
+    let noteCornerRadius = size * 0.06
+    let peelSize = size * 0.22
 
-    // Bubble tail
-    let tailMidX = bubbleRect.minX + bubbleRect.width * 0.3
-    let tail = NSBezierPath()
-    tail.move(to: NSPoint(x: tailMidX - size * 0.06, y: bubbleRect.minY + size * 0.01))
-    tail.line(to: NSPoint(x: tailMidX + size * 0.06, y: bubbleRect.minY + size * 0.01))
-    tail.line(to: NSPoint(x: tailMidX - size * 0.04, y: bubbleRect.minY - size * 0.09))
-    tail.close()
-    tail.fill()
+    // Slight rotation around note center for the "stuck on" look.
+    let rotationDegrees: CGFloat = -4
+    let center = NSPoint(x: noteRect.midX, y: noteRect.midY)
 
-    // Three colored dots
-    let dotR = size * 0.07
-    let dotY = bubbleRect.midY + size * 0.01
-    for (i, color) in [
-        NSColor(red: 1.0, green: 0.28, blue: 0.48, alpha: 1),
-        NSColor(red: 1.0, green: 0.72, blue: 0.0,  alpha: 1),
-        NSColor(red: 0.2, green: 0.82, blue: 0.46, alpha: 1)
-    ].enumerated() {
-        color.setFill()
-        let dotX = bubbleRect.midX + CGFloat(i - 1) * dotR * 2.7
-        NSBezierPath(ovalIn: NSRect(x: dotX - dotR, y: dotY - dotR, width: dotR * 2, height: dotR * 2)).fill()
-    }
+    NSGraphicsContext.saveGraphicsState()
+
+    // Drop shadow for the note.
+    let shadow = NSShadow()
+    shadow.shadowOffset = NSSize(width: 0, height: -size * 0.012)
+    shadow.shadowBlurRadius = size * 0.035
+    shadow.shadowColor = NSColor.black.withAlphaComponent(0.55)
+    shadow.set()
+
+    // Apply rotation around the note's center.
+    let xform = NSAffineTransform()
+    xform.translateX(by: center.x, yBy: center.y)
+    xform.rotate(byDegrees: rotationDegrees)
+    xform.translateX(by: -center.x, yBy: -center.y)
+    xform.concat()
+
+    // Note body — rounded rectangle with the top-right corner cut off (the peel).
+    let bodyPath = stickyNoteBodyPath(rect: noteRect, cornerRadius: noteCornerRadius, peelSize: peelSize)
+
+    // Subtle gradient on the note body for paper feel.
+    NSGraphicsContext.saveGraphicsState()
+    bodyPath.addClip()
+    NSGradient(
+        colors: [
+            NSColor(red: 0.92, green: 0.93, blue: 0.94, alpha: 1),
+            NSColor(red: 0.78, green: 0.80, blue: 0.83, alpha: 1)
+        ],
+        atLocations: [0, 1],
+        colorSpace: .sRGB
+    )!.draw(in: noteRect, angle: -75)
+    NSGraphicsContext.restoreGraphicsState()
+
+    // Stop using shadow now that body is laid down.
+    NSShadow().set()
+
+    // Peel triangle (back of paper). Slightly darker than note + faint inner gradient.
+    let peelPath = peelTrianglePath(rect: noteRect, peelSize: peelSize)
+    NSGraphicsContext.saveGraphicsState()
+    peelPath.addClip()
+    let peelRect = NSRect(
+        x: noteRect.maxX - peelSize,
+        y: noteRect.maxY - peelSize,
+        width: peelSize,
+        height: peelSize
+    )
+    NSGradient(
+        colors: [
+            NSColor(red: 0.55, green: 0.57, blue: 0.60, alpha: 1),
+            NSColor(red: 0.72, green: 0.74, blue: 0.77, alpha: 1)
+        ],
+        atLocations: [0, 1],
+        colorSpace: .sRGB
+    )!.draw(in: peelRect, angle: -135)
+    NSGraphicsContext.restoreGraphicsState()
+
+    // Fold crease line along the diagonal of the peel.
+    let crease = NSBezierPath()
+    crease.move(to: NSPoint(x: noteRect.maxX - peelSize, y: noteRect.maxY))
+    crease.line(to: NSPoint(x: noteRect.maxX, y: noteRect.maxY - peelSize))
+    crease.lineWidth = max(1, size * 0.005)
+    NSColor.black.withAlphaComponent(0.18).setStroke()
+    crease.stroke()
+
+    // Paper-plane send glyph, centered in the note (offset slightly away from the peel).
+    drawSendGlyph(in: noteRect, peelSize: peelSize, size: size)
+
+    NSGraphicsContext.restoreGraphicsState()
 
     NSGraphicsContext.restoreGraphicsState()
     return rep.representation(using: .png, properties: [:])!
+}
+
+func stickyNoteBodyPath(rect: NSRect, cornerRadius r: CGFloat, peelSize peel: CGFloat) -> NSBezierPath {
+    let path = NSBezierPath()
+    let minX = rect.minX, maxX = rect.maxX, minY = rect.minY, maxY = rect.maxY
+
+    // Start at top-left corner (after rounding).
+    path.move(to: NSPoint(x: minX + r, y: maxY))
+
+    // Top edge → start of diagonal peel cut
+    path.line(to: NSPoint(x: maxX - peel, y: maxY))
+
+    // Diagonal cut for the peel
+    path.line(to: NSPoint(x: maxX, y: maxY - peel))
+
+    // Right edge → bottom-right corner
+    path.line(to: NSPoint(x: maxX, y: minY + r))
+    path.appendArc(
+        withCenter: NSPoint(x: maxX - r, y: minY + r),
+        radius: r,
+        startAngle: 0, endAngle: -90, clockwise: true
+    )
+
+    // Bottom edge → bottom-left corner
+    path.line(to: NSPoint(x: minX + r, y: minY))
+    path.appendArc(
+        withCenter: NSPoint(x: minX + r, y: minY + r),
+        radius: r,
+        startAngle: -90, endAngle: 180, clockwise: true
+    )
+
+    // Left edge → top-left corner
+    path.line(to: NSPoint(x: minX, y: maxY - r))
+    path.appendArc(
+        withCenter: NSPoint(x: minX + r, y: maxY - r),
+        radius: r,
+        startAngle: 180, endAngle: 90, clockwise: true
+    )
+
+    path.close()
+    return path
+}
+
+func peelTrianglePath(rect: NSRect, peelSize peel: CGFloat) -> NSBezierPath {
+    let path = NSBezierPath()
+    path.move(to: NSPoint(x: rect.maxX - peel, y: rect.maxY))
+    path.line(to: NSPoint(x: rect.maxX - peel, y: rect.maxY - peel))
+    path.line(to: NSPoint(x: rect.maxX, y: rect.maxY - peel))
+    path.close()
+    return path
+}
+
+func drawSendGlyph(in rect: NSRect, peelSize peel: CGFloat, size: CGFloat) {
+    // Match the in-app send button: SF Symbol `paperplane.circle.fill`, hierarchical blue.
+    let glyphPointSize = size * 0.50
+    let sizeConfig = NSImage.SymbolConfiguration(pointSize: glyphPointSize, weight: .regular)
+    let colorConfig = NSImage.SymbolConfiguration(hierarchicalColor: .systemBlue)
+    let config = sizeConfig.applying(colorConfig)
+
+    guard let symbol = NSImage(systemSymbolName: "paperplane.circle.fill", accessibilityDescription: nil)?
+        .withSymbolConfiguration(config)
+    else { return }
+
+    let symbolSize = symbol.size
+    // Center the glyph on the note, biased away from the peel.
+    let cx = rect.midX - peel * 0.15
+    let cy = rect.midY - peel * 0.10
+    let drawRect = NSRect(
+        x: cx - symbolSize.width / 2,
+        y: cy - symbolSize.height / 2,
+        width: symbolSize.width,
+        height: symbolSize.height
+    )
+    symbol.draw(in: drawRect)
 }
 
 let entries: [(name: String, logical: Int, scale: Int)] = [
