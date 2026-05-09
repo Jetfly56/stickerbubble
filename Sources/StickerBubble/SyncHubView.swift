@@ -9,6 +9,7 @@ struct SyncHubView: View {
     @State private var serverURLDraft = ""
     @State private var signInUserId = ""
     @State private var signInPassword = ""
+    @State private var registerConfirmPassword = ""
 
     @State private var recoverUserId = ""
     @State private var recoverCode = ""
@@ -27,9 +28,11 @@ struct SyncHubView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text("Accounts use a user ID you share with friends. Each Mac has its own device token; sign in on every machine with the same user ID and password.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                if !model.isSignedIn {
+                    Text("Accounts use a user ID you share with friends. Each Mac has its own device token; sign in on every machine with the same user ID and password.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
 
                 serverSection
 
@@ -104,7 +107,7 @@ struct SyncHubView: View {
 
     private var signInRegisterSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("Sign in or create account")
+            sectionTitle("Sign in")
             Text("Server needs JWT_SECRET set (32+ random chars). Add it in Railway variables if deploy fails.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
@@ -120,7 +123,10 @@ struct SyncHubView: View {
                 Button("Sign in") {
                     Task {
                         await model.signIn(userId: signInUserId, password: signInPassword)
-                        if model.isSignedIn { signInPassword = "" }
+                        if model.isSignedIn {
+                            signInPassword = ""
+                            registerConfirmPassword = ""
+                        }
                     }
                 }
                 .disabled(signInUserId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || signInPassword.count < 8)
@@ -128,9 +134,25 @@ struct SyncHubView: View {
 
             Divider().padding(.vertical, 4)
 
-            Text("New here? Use the same fields above, then create your account.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            sectionTitle("Create account")
+            Text(
+                "You are creating an account on this server only. Your user ID can be seen by people you share it with; your password is stored as a hash and never sent in plain text after this. You cannot recover your password by email—use a recovery code from another signed-in Mac if you forget it."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            Text("New here? Enter the same user ID and password as above, confirm the password, then create your account.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+
+            SecureField("Confirm password", text: $registerConfirmPassword)
+                .textFieldStyle(.roundedBorder)
+
+            if !registerConfirmPassword.isEmpty, signInPassword != registerConfirmPassword {
+                Text("Passwords do not match.")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
 
             TextField("Display name (optional, profile + sent with stickers)", text: $model.localDisplayName)
                 .textFieldStyle(.roundedBorder)
@@ -140,10 +162,15 @@ struct SyncHubView: View {
                     await model.register(userId: signInUserId, password: signInPassword)
                     if model.isSignedIn {
                         signInPassword = ""
+                        registerConfirmPassword = ""
                     }
                 }
             }
-            .disabled(signInUserId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || signInPassword.count < 8)
+            .disabled(
+                signInUserId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || signInPassword.count < 8
+                    || signInPassword != registerConfirmPassword
+            )
         }
     }
 
@@ -185,11 +212,16 @@ struct SyncHubView: View {
     private var signedInSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             sectionTitle("Signed in")
-            LabeledContent("User ID") {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("Signed in as")
+                    .font(.body)
                 Text(model.signedInUserId)
-                    .font(.system(.body, design: .monospaced))
+                    .font(.system(.body, design: .monospaced).weight(.semibold))
                     .textSelection(.enabled)
             }
+            Text("User ID and password fields are hidden while you are signed in. Sign out to use a different account on this Mac.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Button("Sign out on this Mac") {
                 model.signOut()
             }

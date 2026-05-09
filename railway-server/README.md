@@ -61,3 +61,14 @@ Open `http://localhost:3000`.
 ### Database note
 
 v2 uses new tables prefixed with `sb_`. Older `contacts` / `messages` tables from v1 are no longer used by the API; you may drop them manually after migrating users.
+
+### If Railway shows **502**
+
+The edge returns 502 when **Node never listens** (crash on boot) or the container is unhealthy. Open **Deploy logs** on the service and look for `FATAL:` or `StickerBubble failed to start:`.
+
+| Log / symptom | Fix |
+|----------------|-----|
+| `FATAL: Set JWT_SECRET` | Add variable **`JWT_SECRET`** (32+ characters). Trim accidental spaces/newlines if you pasted from a doc. |
+| `DATABASE_URL is not set` | Reference Postgres **`DATABASE_URL`** on this same service. |
+| Postgres error about `gen_random_uuid` | Upgrade Postgres to **13+** on Railway (older versions lack built-in `gen_random_uuid`). |
+| `Cannot find module` | Confirm deploy **root directory** is `railway-server` and `npm install` ran (check build logs). |

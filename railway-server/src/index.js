@@ -12,13 +12,14 @@ const { Pool } = require("pg");
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
-const JWT_SECRET = process.env.JWT_SECRET;
+/** Trimmed — Railway pastes sometimes include a trailing newline, which would fail the length check. */
+const JWT_SECRET = process.env.JWT_SECRET ? String(process.env.JWT_SECRET).trim() : "";
 const BCRYPT_ROUNDS = 12;
 const RECOVERY_TTL_MIN = 20;
 
-if (!JWT_SECRET || String(JWT_SECRET).length < 32) {
+if (JWT_SECRET.length < 32) {
   console.error(
-    "FATAL: Set JWT_SECRET (min 32 chars), e.g. openssl rand -base64 32 — add in Railway service Variables."
+    "FATAL: Set JWT_SECRET (min 32 chars after trimming whitespace), e.g. openssl rand -base64 32 — Railway → Variables on this service."
   );
   process.exit(1);
 }
@@ -90,7 +91,8 @@ async function authMiddleware(req, res, next) {
 }
 
 async function initDb() {
-  await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
+  // gen_random_uuid() is built into PostgreSQL 13+ (no pgcrypto). Creating pgcrypto often fails on
+  // managed DBs without superuser and would crash boot → proxy 502.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sb_accounts (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -470,10 +472,12 @@ async function main() {
     process.exit(1);
   }
   await initDb();
-  app.listen(PORT, () => console.log(`StickerBubble server listening on ${PORT}`));
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`StickerBubble server listening on 0.0.0.0:${PORT}`);
+  });
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error("StickerBubble failed to start:", err && err.stack ? err.stack : err);
   process.exit(1);
 });
