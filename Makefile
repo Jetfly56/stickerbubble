@@ -7,7 +7,7 @@ UPDATER  = Sources/StickerBubble/AppUpdater.swift
 VERSION := $(shell grep 'currentVersion' $(UPDATER) | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
 ZIP      = $(APP)-$(VERSION).zip
 
-.PHONY: release build app zip clean
+.PHONY: release build app zip icon clean
 
 release:
 ifdef VERSION
@@ -23,16 +23,23 @@ endif
 build:
 	swift build -c release
 
-app: $(BINARY)
+icon:
+	swift make-icon.swift
+	iconutil -c icns AppIcon.iconset -o AppIcon.icns
+	rm -rf AppIcon.iconset
+
+app: $(BINARY) AppIcon.icns
 	rm -rf $(BUNDLE)
-	mkdir -p $(BUNDLE)/Contents/MacOS
+	mkdir -p $(BUNDLE)/Contents/MacOS $(BUNDLE)/Contents/Resources
 	cp $(BINARY) $(BUNDLE)/Contents/MacOS/$(APP)
+	cp AppIcon.icns $(BUNDLE)/Contents/Resources/AppIcon.icns
 	@printf '<?xml version="1.0" encoding="UTF-8"?>\n\
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n\
 <plist version="1.0"><dict>\n\
   <key>CFBundleExecutable</key>      <string>$(APP)</string>\n\
   <key>CFBundleIdentifier</key>      <string>com.stickerbubble.app</string>\n\
   <key>CFBundleName</key>            <string>$(APP)</string>\n\
+  <key>CFBundleIconFile</key>        <string>AppIcon</string>\n\
   <key>CFBundleVersion</key>         <string>$(VERSION)</string>\n\
   <key>CFBundleShortVersionString</key><string>$(VERSION)</string>\n\
   <key>CFBundlePackageType</key>     <string>APPL</string>\n\
@@ -46,4 +53,4 @@ zip: $(BUNDLE)
 	zip -r $(ZIP) $(BUNDLE)
 
 clean:
-	rm -rf $(BUNDLE) $(APP)-*.zip .build
+	rm -rf $(BUNDLE) $(APP)-*.zip AppIcon.icns AppIcon.iconset .build
