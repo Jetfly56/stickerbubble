@@ -5,6 +5,7 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var bubbleController: BubblePanelController?
     private var syncHubWindow: NSWindow?
+    private let updater = AppUpdater()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         bubbleController = BubblePanelController()
@@ -12,11 +13,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         NSApp.mainMenu = buildMainMenu()
 
-        // Unsigned users must sign in; open Settings once bubble layout exists for positioning above it.
         DispatchQueue.main.async { [weak self] in
             guard let self, let bc = self.bubbleController, !bc.model.isSignedIn else { return }
             self.openAccountAndSync()
         }
+
+        updater.checkForUpdates(silent: true)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -50,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         appMenu.addItem(withTitle: "Hide bubble", action: #selector(hideBubble), keyEquivalent: "h")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Settings…", action: #selector(openAccountAndSync), keyEquivalent: "")
+        appMenu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
         appMenu.addItem(.separator())
         let pasteSticker = NSMenuItem(
             title: "Paste as sticker",
@@ -107,6 +110,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func pasteAsSticker() {
         bubbleController?.pasteStickerFromPasteboard()
+    }
+
+    @objc private func checkForUpdates() {
+        updater.checkForUpdates(silent: false)
     }
 
     /// Also invoked from the bubble panel (menu bar is not always the focused app).
