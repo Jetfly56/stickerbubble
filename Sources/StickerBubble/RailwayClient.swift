@@ -24,6 +24,29 @@ struct RailwayRemoteContact: Codable, Identifiable, Equatable {
     let displayName: String
 }
 
+/// Someone asked to connect; you must accept (or decline).
+struct RailwayContactRequestIncoming: Codable, Identifiable, Equatable {
+    let id: Int
+    let fromUserId: String
+    let peerDisplayName: String
+}
+
+/// You asked to connect; waiting on them.
+struct RailwayContactRequestOutgoing: Codable, Identifiable, Equatable {
+    let id: Int
+    let toUserId: String
+    let peerDisplayName: String
+}
+
+enum RailwayUpsertContactResult: Equatable {
+    /// Already had this peer in your contacts.
+    case alreadyInContacts
+    /// Invite is waiting on the other person.
+    case invitePending
+    /// You were linked (you accepted, or you confirmed an invite they sent).
+    case becameContacts
+}
+
 struct RailwayInboxMessage: Codable, Equatable {
     let id: Int64
     let senderUserId: String
@@ -33,6 +56,12 @@ struct RailwayInboxMessage: Codable, Equatable {
 }
 
 struct RailwayAuthAccount: Codable, Equatable {
+    let userId: String
+    let displayName: String
+}
+
+/// Minimal public profile returned for add-contact confirmation (must be signed in).
+struct RailwayPeerPublicProfile: Codable, Equatable {
     let userId: String
     let displayName: String
 }
@@ -229,6 +258,28 @@ enum RailwayClient {
         return try decoder().decode(RailwayMeResponse.self, from: data)
     }
 
+    /// Returns `nil` when no account exists with this user ID (`404`).
+    static func fetchPeerPublicProfile(baseURL: String, token: String, normalizedUserId: String) async throws -> RailwayPeerPublicProfile? {
+        let endpoint = try joinURL(base: baseURL, path: "/api/users/lookup")
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
+            throw RailwayClientError.invalidBaseURL
+        }
+        components.queryItems = [URLQueryItem(name: "user_id", value: normalizedUserId)]
+        guard let url = components.url else { throw RailwayClientError.invalidBaseURL }
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        applyAuth(&req, token: token)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else { throw RailwayClientError.httpStatus(-1) }
+        if http.statusCode == 404 {
+            return nil
+        }
+        guard http.statusCode == 200 else {
+            throw RailwayClientError.serverMessage(serverErrorMessage(data: data, status: http.statusCode) ?? "HTTP \(http.statusCode)")
+        }
+        return try decoder().decode(RailwayPeerPublicProfile.self, from: data)
+    }
+
     static func patchDisplayName(baseURL: String, token: String, displayName: String) async throws -> RailwayAuthAccount {
         let url = try joinURL(base: baseURL, path: "/api/me")
         var req = URLRequest(url: url)
@@ -249,6 +300,27 @@ enum RailwayClient {
     }
 
     // MARK: - Contacts & inbox
+
+    static func fetchContactRequests(
+        baseURL: String,
+        token: String
+    ) async throws -> (incoming: [RailwayContactRequestIncoming], outgoing: [RailwayContactRequestOutgoing]) {
+        let url = try joinURL(base: baseURL, path: "/api/contacts/requests")
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        applyAuth(&req, token: token)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else { throw RailwayClientError.httpStatus(-1) }
+        guard http.statusCode == 200 else {
+            throw RailwayClientError.serverMessage(serverErrorMessage(data: data, status: http.statusCode) ?? "HTTP \(http.statusCode)")
+        }
+        struct Root: Decodable {
+            let incoming: [RailwayContactRequestIncoming]
+            let outgoing: [RailwayContactRequestOutgoing]
+        }
+        let root = try decoder().decode(Root.self, from: data)
+        return (root.incoming, root.outgoing)
+    }
 
     static func fetchContacts(baseURL: String, token: String) async throws -> [RailwayRemoteContact] {
         let url = try joinURL(base: baseURL, path: "/api/contacts")
@@ -323,7 +395,7 @@ enum RailwayClient {
         token: String,
         peerUserId: String,
         displayName: String
-    ) async throws {
+    ) async throws -> RailwayUpsertContactResult {
         let url = try joinURL(base: baseURL, path: "/api/contacts")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -336,6 +408,62 @@ enum RailwayClient {
         let enc = JSONEncoder()
         enc.keyEncodingStrategy = .convertToSnakeCase
         req.httpBody = try enc.encode(Body(peerUserId: peerUserId, displayName: displayName))
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else { throw RailwayClientError.httpStatus(-1) }
+        guard (200 ... 299).contains(http.statusCode) else {
+            throw RailwayClientError.serverMessage(serverErrorMessage(data: data, status: http.statusCode) ?? "HTTP \(http.statusCode)")
+        }
+        struct Root: Decodable {
+            let outcome: String?
+            let contact: RailwayRemoteContact?
+        }
+        let root = try decoder().decode(Root.self, from: data)
+        if root.outcome == "pending" {
+            return .invitePending
+        }
+        if root.outcome == "accepted_incoming" {
+            return .becameContacts
+        }
+        if root.contact != nil {
+            return .alreadyInContacts
+        }
+        return .invitePending
+    }
+
+    static func acceptContactRequest(baseURL: String, token: String, requestId: Int, displayNameForRequester: String) async throws {
+        let url = try joinURL(base: baseURL, path: "/api/contacts/requests/\(requestId)/accept")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        applyAuth(&req, token: token)
+        struct Body: Encodable { let displayName: String }
+        let enc = JSONEncoder()
+        enc.keyEncodingStrategy = .convertToSnakeCase
+        req.httpBody = try enc.encode(Body(displayName: displayNameForRequester))
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else { throw RailwayClientError.httpStatus(-1) }
+        guard (200 ... 299).contains(http.statusCode) else {
+            throw RailwayClientError.serverMessage(serverErrorMessage(data: data, status: http.statusCode) ?? "HTTP \(http.statusCode)")
+        }
+    }
+
+    static func declineContactRequest(baseURL: String, token: String, requestId: Int) async throws {
+        let url = try joinURL(base: baseURL, path: "/api/contacts/requests/\(requestId)/decline")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        applyAuth(&req, token: token)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else { throw RailwayClientError.httpStatus(-1) }
+        guard (200 ... 299).contains(http.statusCode) else {
+            throw RailwayClientError.serverMessage(serverErrorMessage(data: data, status: http.statusCode) ?? "HTTP \(http.statusCode)")
+        }
+    }
+
+    static func cancelOutgoingContactRequest(baseURL: String, token: String, requestId: Int) async throws {
+        let url = try joinURL(base: baseURL, path: "/api/contacts/requests/\(requestId)")
+        var req = URLRequest(url: url)
+        req.httpMethod = "DELETE"
+        applyAuth(&req, token: token)
         let (data, response) = try await URLSession.shared.data(for: req)
         guard let http = response as? HTTPURLResponse else { throw RailwayClientError.httpStatus(-1) }
         guard (200 ... 299).contains(http.statusCode) else {

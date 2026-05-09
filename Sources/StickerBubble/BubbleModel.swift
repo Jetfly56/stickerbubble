@@ -2,15 +2,37 @@ import AppKit
 import Combine
 import Foundation
 
+/// Server profile snippet shown while typing an add-contact user ID.
+struct PeerUserIdConfirmation: Equatable {
+    let userId: String
+    let displayName: String
+}
+
+enum AddContactPeerLookupState: Equatable {
+    case idle
+    case checking
+    case matched(PeerUserIdConfirmation)
+    case noAccountWithThatId
+    case invalidHandle
+    case yourself
+    case lookupFailed
+}
+
 @MainActor
 final class BubbleModel: ObservableObject {
     private static let folderBookmarkKey = "StickerBubble.sourceFolderBookmark"
     private static let railwayURLKey = "StickerBubble.railwayBaseURL"
+
+    /// Shipped default API base (persisted on first launch; users can change it in Settings).
+    static let bundledDefaultRailwayBaseURL = "https://stickerbubble-production.up.railway.app"
     private static let legacyDeviceKey = "StickerBubble.railwayDeviceId"
     private static let installDeviceTokenKey = "StickerBubble.installDeviceToken"
     private static let authTokenKey = "StickerBubble.authToken"
     private static let signedInUserIdKey = "StickerBubble.signedInUserId"
     private static let localDisplayNameKey = "StickerBubble.localDisplayName"
+
+    /// Per-account ordered list of peer user IDs shown as quick-pick chips on the bubble (local only).
+    @Published private(set) var favoritePeerUserIdsOrdered: [String] = []
 
     /// Who this draft preview is for (shown on the bubble — not sent anywhere).
     @Published var recipientName: String = ""
@@ -28,10 +50,12 @@ final class BubbleModel: ObservableObject {
     private var isAccessingSourceFolder = false
 
     var onStickerChanged: (() -> Void)?
+    /// Invoked when background inbox polling sees new message(s), after the initial “catch up” fetch (so launch / sign-in doesn’t pop the bubble).
+    var onNewInboxFromBackgroundPoll: (() -> Void)?
 
     // MARK: - Server account (user-id + password; multiple devices share one account)
 
-    @Published var railwayBaseURL: String = UserDefaults.standard.string(forKey: BubbleModel.railwayURLKey) ?? ""
+    @Published var railwayBaseURL: String
     /// JWT from last sign-in / register / recover.
     @Published var authToken: String = UserDefaults.standard.string(forKey: BubbleModel.authTokenKey) ?? ""
     /// Signed-in account handle (user-id).
@@ -40,6 +64,12 @@ final class BubbleModel: ObservableObject {
     @Published var localDisplayName: String = UserDefaults.standard.string(forKey: BubbleModel.localDisplayNameKey) ?? ""
 
     @Published var remoteContacts: [RailwayRemoteContact] = []
+    @Published var incomingContactRequests: [RailwayContactRequestIncoming] = []
+    @Published var outgoingContactRequests: [RailwayContactRequestOutgoing] = []
+    /// Short-lived hint after sending an invite or linking (Settings + bubble add-contact).
+    @Published var contactInviteNotice: String?
+    /// Debounced server lookup while typing “their user ID” in add-contact flows.
+    @Published private(set) var addContactPeerLookup: AddContactPeerLookupState = .idle
     @Published var inboxTriageList: [RailwayInboxMessage] = []
     /// Peer **user-id** (handle) to send to.
     @Published var selectedPeerUserId: String = ""
@@ -50,12 +80,28 @@ final class BubbleModel: ObservableObject {
     let installDeviceToken: String
 
     private var pollTask: Task<Void, Never>?
+    /// First inbox fetch after polling starts only syncs IDs / applies latest message — doesn’t reveal the bubble (avoids pop on launch or sign-in).
+    private var isInboxPollWarmup = true
+    private var addContactPeerLookupTask: Task<Void, Never>?
+    private var addContactPeerLookupSeq = 0
 
     var isSignedIn: Bool {
         !authToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     init() {
+        let trimmedSaved =
+            UserDefaults.standard.string(forKey: Self.railwayURLKey)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let initialRailwayURL: String
+        if trimmedSaved.isEmpty {
+            initialRailwayURL = Self.bundledDefaultRailwayBaseURL
+            UserDefaults.standard.set(initialRailwayURL, forKey: Self.railwayURLKey)
+        } else {
+            initialRailwayURL = trimmedSaved
+        }
+        railwayBaseURL = initialRailwayURL
+
         if let t = UserDefaults.standard.string(forKey: Self.installDeviceTokenKey),
            !t.isEmpty,
            Self.normalizedInstallToken(t) != nil
@@ -73,7 +119,66 @@ final class BubbleModel: ObservableObject {
             installDeviceToken = fresh
         }
         restoreSourceFolder()
+        loadFavoritePeerIdsForCurrentAccount()
         startRailwayPollIfConfigured()
+    }
+
+    private static func favoritePeerIdsDefaultsKey(accountUserId: String) -> String {
+        let t = accountUserId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return "StickerBubble.favoritePeerIds.__guest__" }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+        let slug = String(t.unicodeScalars.filter { allowed.contains($0) })
+        return "StickerBubble.favoritePeerIds.\(slug)"
+    }
+
+    private func loadFavoritePeerIdsForCurrentAccount() {
+        let key = Self.favoritePeerIdsDefaultsKey(accountUserId: signedInUserId)
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let decoded = try? JSONDecoder().decode([String].self, from: data)
+        else {
+            favoritePeerUserIdsOrdered = []
+            return
+        }
+        favoritePeerUserIdsOrdered = decoded
+    }
+
+    private func saveFavoritePeerIdsForCurrentAccount() {
+        let key = Self.favoritePeerIdsDefaultsKey(accountUserId: signedInUserId)
+        guard signedInUserId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else { return }
+        guard let data = try? JSONEncoder().encode(favoritePeerUserIdsOrdered) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+
+    func toggleFavoritePeer(peerUserId: String) {
+        let id = peerUserId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return }
+        var next = favoritePeerUserIdsOrdered
+        if let idx = next.firstIndex(of: id) {
+            next.remove(at: idx)
+        } else {
+            next.append(id)
+        }
+        favoritePeerUserIdsOrdered = next
+        saveFavoritePeerIdsForCurrentAccount()
+    }
+
+    func isFavoritePeer(_ peerUserId: String) -> Bool {
+        favoritePeerUserIdsOrdered.contains(peerUserId)
+    }
+
+    /// Favorite contacts in saved order (must exist in `remoteContacts`).
+    func favoriteContactsForBubbleBar() -> [RailwayRemoteContact] {
+        let byId = Dictionary(uniqueKeysWithValues: remoteContacts.map { ($0.peerUserId, $0) })
+        return favoritePeerUserIdsOrdered.compactMap { byId[$0] }
+    }
+
+    private func pruneFavoritePeersAgainstContacts() {
+        guard !favoritePeerUserIdsOrdered.isEmpty else { return }
+        let valid = Set(remoteContacts.map(\.peerUserId))
+        let filtered = favoritePeerUserIdsOrdered.filter { valid.contains($0) }
+        guard filtered.count != favoritePeerUserIdsOrdered.count else { return }
+        favoritePeerUserIdsOrdered = filtered
+        saveFavoritePeerIdsForCurrentAccount()
     }
 
     func setRailwayBaseURL(_ raw: String) {
@@ -106,6 +211,7 @@ final class BubbleModel: ObservableObject {
         signedInUserId = userId
         UserDefaults.standard.set(token, forKey: Self.authTokenKey)
         UserDefaults.standard.set(userId, forKey: Self.signedInUserIdKey)
+        loadFavoritePeerIdsForCurrentAccount()
     }
 
     func signOut() {
@@ -115,10 +221,79 @@ final class BubbleModel: ObservableObject {
         UserDefaults.standard.removeObject(forKey: Self.authTokenKey)
         UserDefaults.standard.removeObject(forKey: Self.signedInUserIdKey)
         remoteContacts = []
+        incomingContactRequests = []
+        outgoingContactRequests = []
+        contactInviteNotice = nil
         inboxTriageList = []
         selectedPeerUserId = ""
+        favoritePeerUserIdsOrdered = []
         lastInboxMessageId = 0
         lastRailwayError = nil
+        clearAddContactUserIdLookup()
+    }
+
+    /// Cancels in-flight lookup and hides confirmation UI (e.g. after sending invite or closing a sheet).
+    func clearAddContactUserIdLookup() {
+        addContactPeerLookupTask?.cancel()
+        addContactPeerLookupSeq &+= 1
+        addContactPeerLookup = .idle
+    }
+
+    /// Call from views when the “their user ID” draft changes (debounced network lookup).
+    func scheduleAddContactUserIdLookup(draftRaw: String) {
+        addContactPeerLookupTask?.cancel()
+        let trimmed = draftRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            clearAddContactUserIdLookup()
+            return
+        }
+        guard let norm = Self.normalizedUserId(trimmed) else {
+            addContactPeerLookup = .invalidHandle
+            return
+        }
+        let selfId = signedInUserId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if norm == selfId {
+            addContactPeerLookup = .yourself
+            return
+        }
+        guard let base = normalizedRailwayBaseURL(), let tok = effectiveAuthToken() else {
+            addContactPeerLookup = .idle
+            return
+        }
+
+        addContactPeerLookupSeq &+= 1
+        let seq = addContactPeerLookupSeq
+        addContactPeerLookup = .checking
+        addContactPeerLookupTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 420_000_000)
+            guard !Task.isCancelled else { return }
+            guard seq == self.addContactPeerLookupSeq else { return }
+            guard let still = Self.normalizedUserId(draftRaw.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  still == norm
+            else {
+                return
+            }
+            do {
+                if let profile = try await RailwayClient.fetchPeerPublicProfile(
+                    baseURL: base,
+                    token: tok,
+                    normalizedUserId: norm
+                ) {
+                    guard seq == self.addContactPeerLookupSeq else { return }
+                    guard Self.normalizedUserId(draftRaw.trimmingCharacters(in: .whitespacesAndNewlines)) == norm else {
+                        return
+                    }
+                    let dn = profile.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.addContactPeerLookup = .matched(PeerUserIdConfirmation(userId: profile.userId, displayName: dn))
+                } else {
+                    guard seq == self.addContactPeerLookupSeq else { return }
+                    self.addContactPeerLookup = .noAccountWithThatId
+                }
+            } catch {
+                guard seq == self.addContactPeerLookupSeq else { return }
+                self.addContactPeerLookup = .lookupFailed
+            }
+        }
     }
 
     func register(userId: String, password: String) async {
@@ -150,6 +325,7 @@ final class BubbleModel: ObservableObject {
             }
             lastInboxMessageId = 0
             await refreshRemoteContacts()
+            await refreshContactRequests()
             await refreshInboxTriage()
             lastRailwayError = nil
             startRailwayPollIfConfigured()
@@ -182,6 +358,7 @@ final class BubbleModel: ObservableObject {
             }
             lastInboxMessageId = 0
             await refreshRemoteContacts()
+            await refreshContactRequests()
             await refreshInboxTriage()
             lastRailwayError = nil
             startRailwayPollIfConfigured()
@@ -215,6 +392,7 @@ final class BubbleModel: ObservableObject {
             persistAuth(token: res.token, userId: res.account.userId)
             lastInboxMessageId = 0
             await refreshRemoteContacts()
+            await refreshContactRequests()
             await refreshInboxTriage()
             lastRailwayError = nil
             startRailwayPollIfConfigured()
@@ -299,6 +477,7 @@ final class BubbleModel: ObservableObject {
     }
 
     func addRemoteContact(displayName: String, peerUserId: String) async {
+        contactInviteNotice = nil
         guard let base = normalizedRailwayBaseURL() else {
             lastRailwayError = "Set server URL first."
             return
@@ -335,12 +514,98 @@ final class BubbleModel: ObservableObject {
             return peerNorm
         }()
         do {
-            try await RailwayClient.upsertContact(baseURL: base, token: tok, peerUserId: peerNorm, displayName: resolvedName)
+            let result = try await RailwayClient.upsertContact(
+                baseURL: base,
+                token: tok,
+                peerUserId: peerNorm,
+                displayName: resolvedName
+            )
             await refreshRemoteContacts()
+            await refreshContactRequests()
+            lastRailwayError = nil
+            switch result {
+            case .invitePending:
+                contactInviteNotice =
+                    "Invite sent. They must accept in Settings (or you will, if they invited you first) before you can pick them as a contact."
+            case .becameContacts:
+                contactInviteNotice = "You’re connected — they’re in your contacts now."
+            case .alreadyInContacts:
+                contactInviteNotice = "Already in your contacts."
+            }
+        } catch {
+            lastRailwayError = error.localizedDescription
+        }
+    }
+
+    func refreshContactRequests() async {
+        guard let base = normalizedRailwayBaseURL() else {
+            incomingContactRequests = []
+            outgoingContactRequests = []
+            return
+        }
+        guard let tok = effectiveAuthToken() else {
+            incomingContactRequests = []
+            outgoingContactRequests = []
+            return
+        }
+        do {
+            let pair = try await RailwayClient.fetchContactRequests(baseURL: base, token: tok)
+            incomingContactRequests = pair.incoming
+            outgoingContactRequests = pair.outgoing
             lastRailwayError = nil
         } catch {
             lastRailwayError = error.localizedDescription
         }
+    }
+
+    func acceptIncomingContactRequest(requestId: Int, displayNameForRequester: String) async {
+        guard let base = normalizedRailwayBaseURL(), let tok = effectiveAuthToken() else { return }
+        contactInviteNotice = nil
+        do {
+            try await RailwayClient.acceptContactRequest(
+                baseURL: base,
+                token: tok,
+                requestId: requestId,
+                displayNameForRequester: displayNameForRequester.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+            await refreshRemoteContacts()
+            await refreshContactRequests()
+            contactInviteNotice = "Contact added — you can send stickers to each other."
+            lastRailwayError = nil
+        } catch {
+            lastRailwayError = error.localizedDescription
+        }
+    }
+
+    func declineIncomingContactRequest(requestId: Int) async {
+        guard let base = normalizedRailwayBaseURL(), let tok = effectiveAuthToken() else { return }
+        do {
+            try await RailwayClient.declineContactRequest(baseURL: base, token: tok, requestId: requestId)
+            await refreshContactRequests()
+            lastRailwayError = nil
+        } catch {
+            lastRailwayError = error.localizedDescription
+        }
+    }
+
+    func cancelOutgoingContactRequest(requestId: Int) async {
+        guard let base = normalizedRailwayBaseURL(), let tok = effectiveAuthToken() else { return }
+        do {
+            try await RailwayClient.cancelOutgoingContactRequest(baseURL: base, token: tok, requestId: requestId)
+            await refreshContactRequests()
+            lastRailwayError = nil
+        } catch {
+            lastRailwayError = error.localizedDescription
+        }
+    }
+
+    private func refreshContactRequestsQuiet() async {
+        guard let base = normalizedRailwayBaseURL(), let tok = effectiveAuthToken() else { return }
+        do {
+            let pair = try await RailwayClient.fetchContactRequests(baseURL: base, token: tok)
+            incomingContactRequests = pair.incoming
+            outgoingContactRequests = pair.outgoing
+        } catch {}
     }
 
     func deleteRemoteContact(id: Int) async {
@@ -360,6 +625,7 @@ final class BubbleModel: ObservableObject {
 
     func startRailwayPollIfConfigured() {
         stopRailwayPoll()
+        isInboxPollWarmup = true
         guard normalizedRailwayBaseURL() != nil, effectiveAuthToken() != nil else { return }
         pollTask = Task { [weak self] in
             guard let self else { return }
@@ -377,7 +643,7 @@ final class BubbleModel: ObservableObject {
 
     func refreshRemoteContacts() async {
         guard let base = normalizedRailwayBaseURL() else {
-            lastRailwayError = "Set server URL first (Account & sync… in the menu)."
+            lastRailwayError = "Set server URL first (Settings in the menu or person button)."
             return
         }
         guard let tok = effectiveAuthToken() else {
@@ -386,10 +652,34 @@ final class BubbleModel: ObservableObject {
         }
         do {
             remoteContacts = try await RailwayClient.fetchContacts(baseURL: base, token: tok)
+            pruneFavoritePeersAgainstContacts()
             lastRailwayError = nil
         } catch {
             lastRailwayError = error.localizedDescription
         }
+    }
+
+    /// Applies typed text to the sticker card when present, then sends the current sticker to the chosen contact when signed in.
+    func performSend() async {
+        sendEmojiFromInput()
+
+        guard isSignedIn else {
+            lastRailwayError = nil
+            return
+        }
+
+        guard stickerSource != nil else {
+            lastRailwayError = "Add a sticker or type text in the field, then send."
+            return
+        }
+
+        let peer = selectedPeerUserId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !peer.isEmpty else {
+            lastRailwayError = "Choose who to send to (Contacts on the bubble)."
+            return
+        }
+
+        await sendCurrentStickerToRailway()
     }
 
     func sendCurrentStickerToRailway() async {
@@ -459,11 +749,17 @@ final class BubbleModel: ObservableObject {
 
     private func pollRailwayInboxOnce() async {
         guard let base = normalizedRailwayBaseURL(), let tok = effectiveAuthToken() else { return }
+        await refreshContactRequestsQuiet()
         do {
             let rows = try await RailwayClient.fetchInbox(baseURL: base, token: tok, afterId: lastInboxMessageId)
             guard let maxId = rows.map(\.id).max(), maxId > lastInboxMessageId else { return }
             let newOnes = rows.filter { $0.id > lastInboxMessageId }.sorted { $0.id < $1.id }
             lastInboxMessageId = maxId
+            let skipReveal = isInboxPollWarmup
+            isInboxPollWarmup = false
+            if !skipReveal, !newOnes.isEmpty {
+                onNewInboxFromBackgroundPoll?()
+            }
             if let latest = newOnes.last {
                 applyInboxMessage(latest)
             }

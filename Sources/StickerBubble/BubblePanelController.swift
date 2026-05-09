@@ -63,11 +63,12 @@ final class BubblePanelController: NSObject {
         model.onStickerChanged = { [weak self] in
             self?.resizePanelToFitContent()
         }
+        model.onNewInboxFromBackgroundPoll = { [weak self] in
+            self?.show()
+        }
 
         hostingView.frame = contentRect
         centerPanel()
-
-        model.startRailwayPollIfConfigured()
 
         keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
@@ -110,6 +111,12 @@ final class BubblePanelController: NSObject {
     func pasteStickerFromPasteboard() {
         model.loadFromPasteboard()
     }
+
+    /// Screen-space frame of the bubble (for placing Settings above it).
+    var bubblePanelFrame: NSRect { panel.frame }
+
+    /// Screen that owns the bubble (for clamping).
+    var bubblePanelScreen: NSScreen? { panel.screen }
 
     private func centerPanel() {
         guard let screen = NSScreen.main else { return }

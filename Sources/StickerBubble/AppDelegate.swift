@@ -11,6 +11,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         bubbleController?.show()
 
         NSApp.mainMenu = buildMainMenu()
+
+        // Unsigned users must sign in; open Settings once bubble layout exists for positioning above it.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let bc = self.bubbleController, !bc.model.isSignedIn else { return }
+            self.openAccountAndSync()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -43,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide bubble", action: #selector(hideBubble), keyEquivalent: "h")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Account & sync…", action: #selector(openAccountAndSync), keyEquivalent: "")
+        appMenu.addItem(withTitle: "Settings…", action: #selector(openAccountAndSync), keyEquivalent: "")
         appMenu.addItem(.separator())
         let pasteSticker = NSMenuItem(
             title: "Paste as sticker",
@@ -107,6 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func openAccountAndSync() {
         guard let bc = bubbleController else { return }
         if let w = syncHubWindow, w.isVisible {
+            configureSettingsWindowLevelAndPlacement(w, bubbleController: bc)
             w.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -118,14 +125,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        w.title = "Account & sync"
+        w.title = "Settings"
         w.contentView = host
         w.delegate = self
         w.isReleasedWhenClosed = false
-        w.center()
+        configureSettingsWindowLevelAndPlacement(w, bubbleController: bc)
         syncHubWindow = w
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Bubble panel uses `.floating`; Settings must use a higher level so it stacks above the sender.
+    private func configureSettingsWindowLevelAndPlacement(_ w: NSWindow, bubbleController bc: BubblePanelController) {
+        w.level = .modalPanel
+        let bubbleFrame = bc.bubblePanelFrame
+        let size = w.frame.size
+        let gap: CGFloat = 12
+        let margin: CGFloat = 8
+        var origin = NSPoint(
+            x: bubbleFrame.midX - size.width / 2,
+            y: bubbleFrame.maxY + gap
+        )
+        let screen = bc.bubblePanelScreen ?? w.screen ?? NSScreen.main
+        if let vf = screen?.visibleFrame {
+            origin.x = min(max(origin.x, vf.minX + margin), vf.maxX - size.width - margin)
+            let top = origin.y + size.height
+            if top > vf.maxY - margin {
+                origin.y = vf.maxY - size.height - margin
+            }
+            if origin.y < vf.minY + margin {
+                origin.y = vf.minY + margin
+            }
+        }
+        w.setFrame(NSRect(origin: origin, size: size), display: false)
     }
 
     func windowWillClose(_ notification: Notification) {

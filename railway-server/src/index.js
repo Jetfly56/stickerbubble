@@ -142,6 +142,28 @@ async function initDb() {
   );
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS sb_contact_requests (
+      id SERIAL PRIMARY KEY,
+      from_account_id UUID NOT NULL REFERENCES sb_accounts(id) ON DELETE CASCADE,
+      to_account_id UUID NOT NULL REFERENCES sb_accounts(id) ON DELETE CASCADE,
+      peer_display_name TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      status TEXT NOT NULL DEFAULT 'pending'
+    );
+  `);
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_sb_contact_requests_incoming ON sb_contact_requests(to_account_id) WHERE status = 'pending'`
+  );
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_sb_contact_requests_outgoing ON sb_contact_requests(from_account_id) WHERE status = 'pending'`
+  );
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sb_contact_requests_unique_pending
+    ON sb_contact_requests(from_account_id, to_account_id)
+    WHERE status = 'pending'
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS sb_recovery_codes (
       id BIGSERIAL PRIMARY KEY,
       account_id UUID NOT NULL REFERENCES sb_accounts(id) ON DELETE CASCADE,
@@ -335,7 +357,81 @@ app.patch("/api/me", authMiddleware, async (req, res) => {
   }
 });
 
-// --- Contacts (by peer user-id) ---
+/** Signed-in only: confirm another handle exists and show their profile display name (add-contact UX). */
+app.get("/api/users/lookup", authMiddleware, async (req, res) => {
+  const q = normalizeUserId(req.query.user_id);
+  if (!q) return res.status(400).json({ error: "invalid_user_id" });
+  if (q === req.userId) return res.status(400).json({ error: "cannot_lookup_self" });
+  try {
+    const { rows } = await pool.query(`SELECT user_id, display_name FROM sb_accounts WHERE user_id = $1`, [q]);
+    if (!rows.length) return res.status(404).json({ error: "not_registered" });
+    const dn = rows[0].display_name != null ? String(rows[0].display_name) : "";
+    res.json({ user_id: rows[0].user_id, display_name: dn.trim().slice(0, 120) });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "db_error" });
+  }
+});
+
+// --- Contacts (by peer user-id; mutual add via requests + accept) ---
+
+/**
+ * Completes a pending request: adds both contact rows, marks request accepted, drops reverse pending if any.
+ * @param {import("pg").PoolClient} client
+ * @param {string} accepterLabelsRequester — display name the accepter (to_*) uses for the requester (from_*) in the accepter's contact list.
+ */
+async function acceptContactRequestTx(client, requestRowId, accepterAccountId, accepterLabelsRequester) {
+  const reqRow = await client.query(
+    `SELECT id, from_account_id, to_account_id, peer_display_name, status
+     FROM sb_contact_requests WHERE id = $1 FOR UPDATE`,
+    [requestRowId]
+  );
+  if (!reqRow.rows.length) return { error: "not_found" };
+  const r = reqRow.rows[0];
+  if (r.status !== "pending") return { error: "not_pending" };
+  if (String(r.to_account_id) !== String(accepterAccountId)) return { error: "forbidden" };
+
+  const fromAcc = await client.query(`SELECT user_id, display_name FROM sb_accounts WHERE id = $1`, [r.from_account_id]);
+  const toAcc = await client.query(`SELECT user_id, display_name FROM sb_accounts WHERE id = $1`, [r.to_account_id]);
+  if (!fromAcc.rows.length || !toAcc.rows.length) return { error: "not_found" };
+
+  const fromUid = fromAcc.rows[0].user_id;
+  const toUid = toAcc.rows[0].user_id;
+  let labelForRequesterInAccepterList = (accepterLabelsRequester || "").toString().trim().slice(0, 120);
+  if (!labelForRequesterInAccepterList) {
+    const dn = (fromAcc.rows[0].display_name || "").toString().trim();
+    labelForRequesterInAccepterList = dn || fromUid;
+  }
+  let labelForPeerInRequesterList = (r.peer_display_name || "").toString().trim().slice(0, 120);
+  if (!labelForPeerInRequesterList) labelForPeerInRequesterList = toUid;
+
+  await client.query(
+    `INSERT INTO sb_contacts (owner_account_id, peer_user_id, display_name) VALUES ($1, $2, $3)
+     ON CONFLICT (owner_account_id, peer_user_id) DO UPDATE SET display_name = EXCLUDED.display_name`,
+    [r.from_account_id, toUid, labelForPeerInRequesterList]
+  );
+  await client.query(
+    `INSERT INTO sb_contacts (owner_account_id, peer_user_id, display_name) VALUES ($1, $2, $3)
+     ON CONFLICT (owner_account_id, peer_user_id) DO UPDATE SET display_name = EXCLUDED.display_name`,
+    [r.to_account_id, fromUid, labelForRequesterInAccepterList]
+  );
+
+  await client.query(`UPDATE sb_contact_requests SET status = 'accepted' WHERE id = $1`, [requestRowId]);
+  await client.query(
+    `UPDATE sb_contact_requests SET status = 'cancelled' WHERE status = 'pending' AND from_account_id = $1 AND to_account_id = $2`,
+    [r.to_account_id, r.from_account_id]
+  );
+
+  const { rows: cFrom } = await client.query(
+    `SELECT id, peer_user_id, display_name, created_at FROM sb_contacts WHERE owner_account_id = $1 AND peer_user_id = $2`,
+    [r.from_account_id, toUid]
+  );
+  const { rows: cTo } = await client.query(
+    `SELECT id, peer_user_id, display_name, created_at FROM sb_contacts WHERE owner_account_id = $1 AND peer_user_id = $2`,
+    [r.to_account_id, fromUid]
+  );
+  return { ok: true, contacts: { requester: cFrom[0], accepter: cTo[0] } };
+}
 
 app.get("/api/contacts", authMiddleware, async (req, res) => {
   try {
@@ -350,20 +446,178 @@ app.get("/api/contacts", authMiddleware, async (req, res) => {
   }
 });
 
+/** Pending contact invites (incoming / outgoing). */
+app.get("/api/contacts/requests", authMiddleware, async (req, res) => {
+  try {
+    const { rows: incoming } = await pool.query(
+      `SELECT r.id, a.user_id AS from_user_id, r.peer_display_name, r.created_at
+       FROM sb_contact_requests r
+       JOIN sb_accounts a ON a.id = r.from_account_id
+       WHERE r.to_account_id = $1 AND r.status = 'pending'
+       ORDER BY r.created_at ASC`,
+      [req.accountId]
+    );
+    const { rows: outgoing } = await pool.query(
+      `SELECT r.id, a.user_id AS to_user_id, r.peer_display_name, r.created_at
+       FROM sb_contact_requests r
+       JOIN sb_accounts a ON a.id = r.to_account_id
+       WHERE r.from_account_id = $1 AND r.status = 'pending'
+       ORDER BY r.created_at ASC`,
+      [req.accountId]
+    );
+    res.json({ incoming, outgoing });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "db_error" });
+  }
+});
+
 app.post("/api/contacts", authMiddleware, async (req, res) => {
   const { peer_user_id, display_name } = req.body || {};
   const peer = normalizeUserId(peer_user_id);
   if (!peer) return res.status(400).json({ error: "invalid_peer_user_id" });
   if (peer === req.userId) return res.status(400).json({ error: "cannot_add_self" });
   const name = (display_name || "").toString().trim().slice(0, 120) || peer;
+
+  const client = await pool.connect();
   try {
-    const { rows } = await pool.query(
-      `INSERT INTO sb_contacts (owner_account_id, peer_user_id, display_name) VALUES ($1, $2, $3)
-       ON CONFLICT (owner_account_id, peer_user_id) DO UPDATE SET display_name = EXCLUDED.display_name
-       RETURNING id, peer_user_id, display_name, created_at`,
-      [req.accountId, peer, name]
+    await client.query("BEGIN");
+    const peerAcc = await client.query(`SELECT id FROM sb_accounts WHERE user_id = $1`, [peer]);
+    if (!peerAcc.rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "recipient_not_registered" });
+    }
+    const peerAccountId = peerAcc.rows[0].id;
+
+    const existingContact = await client.query(
+      `SELECT id, peer_user_id, display_name, created_at FROM sb_contacts WHERE owner_account_id = $1 AND peer_user_id = $2`,
+      [req.accountId, peer]
     );
-    res.status(201).json({ contact: rows[0] });
+    if (existingContact.rows.length) {
+      await client.query("COMMIT");
+      return res.status(200).json({ contact: existingContact.rows[0] });
+    }
+
+    const incoming = await client.query(
+      `SELECT id FROM sb_contact_requests
+       WHERE from_account_id = $1 AND to_account_id = $2 AND status = 'pending'`,
+      [peerAccountId, req.accountId]
+    );
+    if (incoming.rows.length) {
+      const result = await acceptContactRequestTx(client, incoming.rows[0].id, req.accountId, name);
+      if (result.error) {
+        await client.query("ROLLBACK");
+        const map = { not_found: 404, not_pending: 409, forbidden: 403 };
+        return res.status(map[result.error] || 500).json({ error: result.error });
+      }
+      await client.query("COMMIT");
+      return res.status(201).json({
+        outcome: "accepted_incoming",
+        contact: result.contacts.accepter,
+      });
+    }
+
+    const outgoing = await client.query(
+      `SELECT r.id, r.peer_display_name, r.created_at, a.user_id AS to_user_id
+       FROM sb_contact_requests r
+       JOIN sb_accounts a ON a.id = r.to_account_id
+       WHERE r.from_account_id = $1 AND r.to_account_id = $2 AND r.status = 'pending'`,
+      [req.accountId, peerAccountId]
+    );
+    if (outgoing.rows.length) {
+      await client.query("COMMIT");
+      return res.status(200).json({
+        outcome: "pending",
+        request: outgoing.rows[0],
+      });
+    }
+
+    const ins = await client.query(
+      `INSERT INTO sb_contact_requests (from_account_id, to_account_id, peer_display_name, status)
+       VALUES ($1, $2, $3, 'pending')
+       RETURNING id, peer_display_name, created_at`,
+      [req.accountId, peerAccountId, name]
+    );
+    await client.query("COMMIT");
+    return res.status(201).json({
+      outcome: "pending",
+      request: { ...ins.rows[0], to_user_id: peer },
+    });
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (e.code === "23505") {
+      try {
+        const { rows: again } = await pool.query(
+          `SELECT r.id, r.peer_display_name, r.created_at, a.user_id AS to_user_id
+           FROM sb_contact_requests r
+           JOIN sb_accounts a ON a.id = r.to_account_id
+           WHERE r.from_account_id = $1 AND a.user_id = $2 AND r.status = 'pending'`,
+          [req.accountId, peer]
+        );
+        if (again.length) {
+          return res.status(200).json({ outcome: "pending", request: again[0] });
+        }
+      } catch (_) {}
+    }
+    console.error(e);
+    res.status(500).json({ error: "db_error" });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/api/contacts/requests/:id/accept", authMiddleware, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: "invalid_id" });
+  const { display_name } = req.body || {};
+  const label = (display_name != null ? String(display_name) : "").trim().slice(0, 120);
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await acceptContactRequestTx(client, id, req.accountId, label);
+    if (result.error) {
+      await client.query("ROLLBACK");
+      const map = { not_found: 404, not_pending: 409, forbidden: 403 };
+      return res.status(map[result.error] || 500).json({ error: result.error });
+    }
+    await client.query("COMMIT");
+    res.json({ ok: true, contact: result.contacts.accepter });
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error(e);
+    res.status(500).json({ error: "db_error" });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/api/contacts/requests/:id/decline", authMiddleware, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: "invalid_id" });
+  try {
+    const r = await pool.query(
+      `DELETE FROM sb_contact_requests WHERE id = $1 AND to_account_id = $2 AND status = 'pending' RETURNING id`,
+      [id, req.accountId]
+    );
+    if (r.rowCount === 0) return res.status(404).json({ error: "not_found" });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "db_error" });
+  }
+});
+
+app.delete("/api/contacts/requests/:id", authMiddleware, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: "invalid_id" });
+  try {
+    const r = await pool.query(
+      `DELETE FROM sb_contact_requests WHERE id = $1 AND from_account_id = $2 AND status = 'pending' RETURNING id`,
+      [id, req.accountId]
+    );
+    if (r.rowCount === 0) return res.status(404).json({ error: "not_found" });
+    res.json({ ok: true });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "db_error" });

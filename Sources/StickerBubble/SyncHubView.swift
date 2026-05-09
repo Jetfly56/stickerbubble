@@ -44,6 +44,7 @@ struct SyncHubView: View {
                 }
 
                 if model.isSignedIn {
+                    contactRequestsSection
                     contactsSection
                     inboxSection
                 }
@@ -60,12 +61,16 @@ struct SyncHubView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(minWidth: 440, minHeight: 560)
+        .onReceive(model.$railwayBaseURL) { url in
+            serverURLDraft = url
+        }
         .onAppear {
             serverURLDraft = model.railwayBaseURL
             signInUserId = model.signedInUserId
             Task {
                 if model.isSignedIn {
                     await model.refreshRemoteContacts()
+                    await model.refreshContactRequests()
                     await model.refreshInboxTriage()
                 }
             }
@@ -91,16 +96,77 @@ struct SyncHubView: View {
     private var serverSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Server")
-            TextField("https://your-app.up.railway.app", text: $serverURLDraft)
+            Text(
+                "Installs default to production. Change this field if your API moves to another URL, then Save."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            TextField("Server base URL", text: $serverURLDraft, prompt: Text(BubbleModel.bundledDefaultRailwayBaseURL))
                 .textFieldStyle(.roundedBorder)
             Button("Save & connect") {
                 model.setRailwayBaseURL(serverURLDraft)
                 Task {
                     if model.isSignedIn {
                         await model.refreshRemoteContacts()
+                        await model.refreshContactRequests()
                         await model.refreshInboxTriage()
                     }
                 }
+            }
+        }
+    }
+
+    private var contactRequestsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionTitle("Contact requests")
+            Text(
+                "Adding someone sends them an invite. You’ll both appear in each other’s contacts only after they accept (or after you accept theirs)."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            if !model.incomingContactRequests.isEmpty {
+                Text("Waiting for you")
+                    .font(.subheadline.weight(.semibold))
+                ForEach(model.incomingContactRequests) { req in
+                    IncomingContactRequestRow(request: req, model: model)
+                    Divider()
+                }
+            }
+
+            if !model.outgoingContactRequests.isEmpty {
+                Text("Waiting for them")
+                    .font(.subheadline.weight(.semibold))
+                ForEach(model.outgoingContactRequests) { req in
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(req.toUserId)
+                                .font(.system(.body, design: .monospaced).weight(.semibold))
+                            Text("Invite pending — they need to accept in Settings.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("You’ll list them as: \(req.peerDisplayName)")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        Spacer(minLength: 8)
+                        Button("Cancel") {
+                            Task { await model.cancelOutgoingContactRequest(requestId: req.id) }
+                        }
+                    }
+                    .padding(.vertical, 6)
+                    Divider()
+                }
+            }
+
+            if model.incomingContactRequests.isEmpty, model.outgoingContactRequests.isEmpty {
+                Text("No open requests.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Button("Refresh requests") {
+                Task { await model.refreshContactRequests() }
             }
         }
     }
@@ -178,7 +244,7 @@ struct SyncHubView: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Forgot password on this Mac?")
             Text(
-                "Password reset is not done by email. On a Mac where you are already signed in, open Account & sync and tap Generate recovery code, then enter that code here with a new password."
+                "Password reset is not done by email. On a Mac where you are already signed in, open Settings and tap Generate recovery code, then enter that code here with a new password."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -277,9 +343,16 @@ struct SyncHubView: View {
     private var contactsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Contacts")
-            Text("Add people by their user ID. Leave name empty to infer from their latest message display name, or use their user ID as the label.")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+            if let notice = model.contactInviteNotice, !notice.isEmpty {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text(
+                "Add people by user ID — this sends a contact invite. Leave name empty to infer from their latest message display name, or use their user ID as the label."
+            )
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
             HStack(alignment: .top, spacing: 10) {
                 TextField("Name (optional)", text: $newContactName)
                     .textFieldStyle(.roundedBorder)
@@ -287,14 +360,20 @@ struct SyncHubView: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
             }
+            AddContactPeerLookupBanner(state: model.addContactPeerLookup)
+                .frame(maxWidth: .infinity, alignment: .leading)
             Button("Add contact") {
                 Task {
                     await model.addRemoteContact(displayName: newContactName, peerUserId: newPeerUserId)
+                    model.clearAddContactUserIdLookup()
                     newContactName = ""
                     newPeerUserId = ""
                 }
             }
             .disabled(newPeerUserId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .onChange(of: newPeerUserId) { newVal in
+                model.scheduleAddContactUserIdLookup(draftRaw: newVal)
+            }
 
             if model.remoteContacts.isEmpty {
                 Text("No contacts yet.")
@@ -410,5 +489,86 @@ struct SyncHubView: View {
     private func inboxSenderShowsUserId(_ msg: RailwayInboxMessage) -> Bool {
         guard let n = msg.senderDisplayName else { return false }
         return !n.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+struct AddContactPeerLookupBanner: View {
+    let state: AddContactPeerLookupState
+
+    var body: some View {
+        Group {
+            switch state {
+            case .idle:
+                EmptyView()
+            case .checking:
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Looking up…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            case .invalidHandle:
+                Text("That isn’t a valid user ID (use 2–64 letters, numbers, period, underscore, or hyphen).")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .yourself:
+                Text("That’s your own user ID.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            case .noAccountWithThatId:
+                Text("No account with this user ID on this server.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .lookupFailed:
+                Text("Couldn’t verify this ID — check connection or try again.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .matched(let peer):
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(peer.displayName.isEmpty ? "Registered — no display name on profile" : peer.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("User ID: \(peer.userId)")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+}
+
+private struct IncomingContactRequestRow: View {
+    let request: RailwayContactRequestIncoming
+    @ObservedObject var model: BubbleModel
+    @State private var labelForThem = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(request.fromUserId)
+                .font(.system(.body, design: .monospaced).weight(.semibold))
+            Text("They’ll list you as: \(request.peerDisplayName)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            TextField("Your label for them (optional)", text: $labelForThem)
+                .textFieldStyle(.roundedBorder)
+            HStack(spacing: 10) {
+                Button("Accept") {
+                    Task {
+                        await model.acceptIncomingContactRequest(
+                            requestId: request.id,
+                            displayNameForRequester: labelForThem
+                        )
+                    }
+                }
+                Button("Decline", role: .destructive) {
+                    Task { await model.declineIncomingContactRequest(requestId: request.id) }
+                }
+            }
+        }
+        .padding(.vertical, 6)
     }
 }
