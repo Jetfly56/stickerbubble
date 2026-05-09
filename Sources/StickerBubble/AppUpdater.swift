@@ -143,20 +143,32 @@ final class AppUpdater {
         let installPath = bundleURL.path
         let newAppPath = newAppURL.path
         let cleanupPath = extractDir.path
+        let tmp = FileManager.default.temporaryDirectory
+
+        // Separate copy script so osascript admin escalation needs no path escaping.
+        let copyScriptURL = tmp.appendingPathComponent("stickerbubble-copy.sh")
+        let copyScript = """
+        #!/bin/bash
+        rm -rf '\(installPath)'
+        cp -R '\(newAppPath)' '\(installPath)'
+        /usr/bin/xattr -cr '\(installPath)'
+        """
+        try copyScript.write(to: copyScriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: copyScriptURL.path)
 
         let script = """
         #!/bin/bash
         sleep 1
         /usr/bin/xattr -cr '\(newAppPath)'
-        rm -rf '\(installPath)'
-        cp -R '\(newAppPath)' '\(installPath)'
-        /usr/bin/xattr -cr '\(installPath)'
+        /bin/bash '\(copyScriptURL.path)'
+        if [ $? -ne 0 ]; then
+            /usr/bin/osascript -e 'do shell script "/bin/bash \(copyScriptURL.path)" with administrator privileges'
+        fi
         /usr/bin/open '\(installPath)'
         rm -rf '\(cleanupPath)'
         """
 
-        let scriptURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("stickerbubble-install.sh")
+        let scriptURL = tmp.appendingPathComponent("stickerbubble-install.sh")
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
 
