@@ -51,6 +51,7 @@ final class BubbleModel: ObservableObject {
     private var isAccessingSourceFolder = false
 
     var onStickerChanged: (() -> Void)?
+    var onSendSuccess: (() -> Void)?
     /// Invoked when background inbox polling sees new message(s), after the initial “catch up” fetch (so launch / sign-in doesn’t pop the bubble).
     var onNewInboxFromBackgroundPoll: (() -> Void)?
 
@@ -737,6 +738,7 @@ final class BubbleModel: ObservableObject {
                 )
             }
             lastRailwayError = nil
+            onSendSuccess?()
         } catch {
             lastRailwayError = error.localizedDescription
         }

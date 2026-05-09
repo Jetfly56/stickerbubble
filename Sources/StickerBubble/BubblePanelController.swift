@@ -63,6 +63,9 @@ final class BubblePanelController: NSObject {
         model.onStickerChanged = { [weak self] in
             self?.resizePanelToFitContent()
         }
+        model.onSendSuccess = { [weak self] in
+            self?.hide()
+        }
         model.onNewInboxFromBackgroundPoll = { [weak self] in
             self?.show()
         }
