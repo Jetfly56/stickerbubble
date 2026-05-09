@@ -52,6 +52,8 @@ final class BubbleModel: ObservableObject {
 
     /// Set when a new message arrives from background polling; cleared after the banner is shown.
     @Published var receivedFromName: String?
+    /// Hides bottom send chrome when a message just arrived; tap anywhere to reveal.
+    @Published var isReceivingMode: Bool = false
 
     var onStickerChanged: (() -> Void)?
     var onSendSuccess: (() -> Void)?
@@ -768,6 +770,7 @@ final class BubbleModel: ObservableObject {
                         return t.isEmpty ? nil : t
                     } ?? latest.senderUserId
                     receivedFromName = senderLabel
+                    isReceivingMode = true
                 }
             }
             lastRailwayError = nil

@@ -294,41 +294,56 @@ struct ChatBubbleView: View {
             .padding(.top, 10)
         }
         .overlay(alignment: .bottomLeading) {
-            VStack(alignment: .leading, spacing: 10) {
-                sendToInnerChrome
+            if !model.isReceivingMode {
+                VStack(alignment: .leading, spacing: 10) {
+                    sendToInnerChrome
 
-                HStack(alignment: .center, spacing: 8) {
-                    TextField("Type emoji or short text…", text: Binding(
-                        get: { model.emojiField },
-                        set: { model.emojiField = $0 }
-                    ))
-                    .focused($isEmojiFieldFocused)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit {
-                        Task { await model.performSend() }
+                    HStack(alignment: .center, spacing: 8) {
+                        TextField("Type emoji or short text…", text: Binding(
+                            get: { model.emojiField },
+                            set: { model.emojiField = $0 }
+                        ))
+                        .focused($isEmojiFieldFocused)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            Task { await model.performSend() }
+                        }
+
+                        Button {
+                            Task { await model.performSend() }
+                        } label: {
+                            Image(systemName: "paperplane.circle.fill")
+                                .font(.system(size: 28, weight: .regular))
+                                .symbolRenderingMode(.hierarchical)
+                                .foregroundStyle(.blue)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Send — sticker or text goes to the contact chosen in Send to when signed in; otherwise updates the preview.")
+                        .accessibilityLabel("Send")
                     }
 
-                    Button {
-                        Task { await model.performSend() }
-                    } label: {
-                        Image(systemName: "paperplane.circle.fill")
-                            .font(.system(size: 28, weight: .regular))
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(.blue)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Send — sticker or text goes to the contact chosen in Send to when signed in; otherwise updates the preview.")
-                    .accessibilityLabel("Send")
+                    Text("Preview only — not delivered.")
+                        .font(.system(.caption2, design: .rounded))
+                        .foregroundStyle(.tertiary)
                 }
-
-                Text("Preview only — not delivered.")
-                    .font(.system(.caption2, design: .rounded))
-                    .foregroundStyle(.tertiary)
+                .padding(.leading, 12)
+                .padding(.trailing, 12)
+                .padding(.bottom, 12)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            .padding(.leading, 12)
-            .padding(.trailing, 12)
-            .padding(.bottom, 12)
         }
+        .overlay {
+            if model.isReceivingMode {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            model.isReceivingMode = false
+                        }
+                    }
+            }
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: model.isReceivingMode)
         .overlay(alignment: .top) {
             if let name = model.receivedFromName {
                 receivedBanner(name: name)
