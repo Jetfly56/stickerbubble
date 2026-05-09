@@ -3,7 +3,7 @@ import Foundation
 
 @MainActor
 final class AppUpdater {
-    static let currentVersion = "1.0.1"
+    static let currentVersion = "1.0.2"
 
     private static let apiURL = URL(
         string: "https://api.github.com/repos/Jetfly56/stickerbubble/releases/latest"
@@ -119,6 +119,13 @@ final class AppUpdater {
         try? FileManager.default.removeItem(at: extractDir)
         try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: true)
 
+        // Strip quarantine from the zip before extracting so it doesn't propagate to contents.
+        let stripZip = Process()
+        stripZip.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+        stripZip.arguments = ["-cr", zipURL.path]
+        try stripZip.run()
+        stripZip.waitUntilExit()
+
         let unzip = Process()
         unzip.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
         unzip.arguments = ["-q", zipURL.path, "-d", extractDir.path]
@@ -140,10 +147,11 @@ final class AppUpdater {
         let script = """
         #!/bin/bash
         sleep 1
+        /usr/bin/xattr -cr '\(newAppPath)'
         rm -rf '\(installPath)'
         cp -R '\(newAppPath)' '\(installPath)'
-        xattr -cr '\(installPath)'
-        open '\(installPath)'
+        /usr/bin/xattr -cr '\(installPath)'
+        /usr/bin/open '\(installPath)'
         rm -rf '\(cleanupPath)'
         """
 
