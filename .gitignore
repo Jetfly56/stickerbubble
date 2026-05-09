@@ -1,0 +1,9 @@
+.DS_Store
+.build/
+.swiftpm/xcode/
+*.xcodeproj/xcuserdata/
+
+# Server
+railway-server/node_modules/
+railway-server/.env
+railway-server/*.log
