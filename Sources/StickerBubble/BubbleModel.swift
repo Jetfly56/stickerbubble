@@ -251,11 +251,6 @@ final class BubbleModel: ObservableObject {
             addContactPeerLookup = .invalidHandle
             return
         }
-        let selfId = signedInUserId.trimmingCharacters(in: .whitespacesAndNewlines)
-        if norm == selfId {
-            addContactPeerLookup = .yourself
-            return
-        }
         guard let base = normalizedRailwayBaseURL(), let tok = effectiveAuthToken() else {
             addContactPeerLookup = .idle
             return
@@ -494,10 +489,6 @@ final class BubbleModel: ObservableObject {
         }
         guard let peerNorm = Self.normalizedUserId(peer) else {
             lastRailwayError = "Peer user ID must be 2–64 characters: letters, numbers, period, underscore, or hyphen."
-            return
-        }
-        if peerNorm == signedInUserId.trimmingCharacters(in: .whitespacesAndNewlines) {
-            lastRailwayError = "You cannot add yourself as a contact."
             return
         }
         if name.isEmpty {
