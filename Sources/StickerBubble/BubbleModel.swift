@@ -21,6 +21,7 @@ enum AddContactPeerLookupState: Equatable {
 @MainActor
 final class BubbleModel: ObservableObject {
     private static let folderBookmarkKey = "StickerBubble.sourceFolderBookmark"
+    private static let folderPathKey = "StickerBubble.sourceFolderPath"
     private static let railwayURLKey = "StickerBubble.railwayBaseURL"
 
     /// Shipped default API base (persisted on first launch; users can change it in Settings).
@@ -31,19 +32,73 @@ final class BubbleModel: ObservableObject {
     private static let signedInUserIdKey = "StickerBubble.signedInUserId"
     private static let localDisplayNameKey = "StickerBubble.localDisplayName"
     private static let sendToSelfEnabledKey = "StickerBubble.sendToSelfEnabled"
+    private static let globallyMutedKey = "StickerBubble.globallyMuted"
     private static let lastSelectedPeerKeyPrefix = "StickerBubble.lastSelectedPeer"
 
     /// Per-account ordered list of peer user IDs shown as quick-pick chips on the bubble (local only).
     @Published private(set) var favoritePeerUserIdsOrdered: [String] = []
 
+    /// Per-account set of peer user IDs whose incoming messages don't pop the bubble (local only).
+    @Published private(set) var mutedPeerUserIds: Set<String> = []
+
     /// Who this draft preview is for (shown on the bubble — not sent anywhere).
     @Published var recipientName: String = ""
     /// Optional second line under the recipient name (e.g. context for your draft).
     @Published var recipientDetail: String = ""
-    @Published var stickerSource: StickerSource?
+    @Published var stickerSource: StickerSource? {
+        didSet {
+            switch stickerSource {
+            case .url, .image, nil: stickerExpanded = false
+            case .text: break
+            }
+        }
+    }
+    @Published var stickerExpanded: Bool = false
 
     /// Text field for typing emoji / short messages before Send.
-    @Published var emojiField: String = ""
+    @Published var emojiField: String = "" {
+        didSet {
+            if skipEmojiFieldStickerSync { return }
+            // Once the sticker is an explicit code/formula block, leave it alone — typing
+            // in the field is independent and shouldn't wipe the rendered block.
+            if case .text(let existing) = stickerSource,
+               existing.contains("```") || existing.contains("$$")
+            {
+                return
+            }
+            let trimmed = emojiField.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                if case .text = stickerSource {
+                    stickerSource = nil
+                    onStickerChanged?()
+                }
+            } else {
+                stickerSource = .text(trimmed)
+                onStickerChanged?()
+            }
+        }
+    }
+
+    private var skipEmojiFieldStickerSync = false
+
+    /// Set the sticker to a given text directly and clear the emoji field
+    /// without the field's didSet clobbering the sticker source.
+    func setStickerTextAndClearField(_ text: String) {
+        skipEmojiFieldStickerSync = true
+        emojiField = ""
+        skipEmojiFieldStickerSync = false
+        stickerSource = .text(text)
+        onStickerChanged?()
+    }
+
+    /// Move text from a wrapped sticker back into the field as plain content.
+    func unwrapStickerToField(_ text: String) {
+        skipEmojiFieldStickerSync = true
+        emojiField = text
+        skipEmojiFieldStickerSync = false
+        stickerSource = .text(text)
+        onStickerChanged?()
+    }
 
     /// User-selected folder for sticker files (images). Persisted via security-scoped bookmark when possible.
     @Published private(set) var sourceFolderURL: URL?
@@ -73,6 +128,9 @@ final class BubbleModel: ObservableObject {
 
     @Published var sendToSelfEnabled: Bool = UserDefaults.standard.bool(forKey: BubbleModel.sendToSelfEnabledKey) {
         didSet { UserDefaults.standard.set(sendToSelfEnabled, forKey: Self.sendToSelfEnabledKey) }
+    }
+    @Published var globallyMuted: Bool = UserDefaults.standard.bool(forKey: BubbleModel.globallyMutedKey) {
+        didSet { UserDefaults.standard.set(globallyMuted, forKey: Self.globallyMutedKey) }
     }
     @Published var remoteContacts: [RailwayRemoteContact] = []
     @Published var incomingContactRequests: [RailwayContactRequestIncoming] = []
@@ -133,6 +191,7 @@ final class BubbleModel: ObservableObject {
         }
         restoreSourceFolder()
         loadFavoritePeerIdsForCurrentAccount()
+        loadMutedPeersForCurrentAccount()
         loadLastSelectedPeerForCurrentAccount()
         startRailwayPollIfConfigured()
     }
@@ -196,6 +255,47 @@ final class BubbleModel: ObservableObject {
         favoritePeerUserIdsOrdered.contains(peerUserId)
     }
 
+    private static func mutedPeerIdsDefaultsKey(accountUserId: String) -> String {
+        let t = accountUserId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return "StickerBubble.mutedPeerIds.__guest__" }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+        let slug = String(t.unicodeScalars.filter { allowed.contains($0) })
+        return "StickerBubble.mutedPeerIds.\(slug)"
+    }
+
+    private func loadMutedPeersForCurrentAccount() {
+        let key = Self.mutedPeerIdsDefaultsKey(accountUserId: signedInUserId)
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let decoded = try? JSONDecoder().decode([String].self, from: data)
+        else {
+            mutedPeerUserIds = []
+            return
+        }
+        mutedPeerUserIds = Set(decoded)
+    }
+
+    private func saveMutedPeersForCurrentAccount() {
+        let key = Self.mutedPeerIdsDefaultsKey(accountUserId: signedInUserId)
+        guard signedInUserId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else { return }
+        guard let data = try? JSONEncoder().encode(Array(mutedPeerUserIds)) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+
+    func toggleMutePeer(_ peerUserId: String) {
+        let id = peerUserId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return }
+        if mutedPeerUserIds.contains(id) {
+            mutedPeerUserIds.remove(id)
+        } else {
+            mutedPeerUserIds.insert(id)
+        }
+        saveMutedPeersForCurrentAccount()
+    }
+
+    func isPeerMuted(_ peerUserId: String) -> Bool {
+        mutedPeerUserIds.contains(peerUserId)
+    }
+
     /// Favorite contacts in saved order (must exist in `remoteContacts`).
     func favoriteContactsForBubbleBar() -> [RailwayRemoteContact] {
         let byId = Dictionary(uniqueKeysWithValues: remoteContacts.map { ($0.peerUserId, $0) })
@@ -242,6 +342,7 @@ final class BubbleModel: ObservableObject {
         UserDefaults.standard.set(token, forKey: Self.authTokenKey)
         UserDefaults.standard.set(userId, forKey: Self.signedInUserIdKey)
         loadFavoritePeerIdsForCurrentAccount()
+        loadMutedPeersForCurrentAccount()
         loadLastSelectedPeerForCurrentAccount()
     }
 
@@ -258,6 +359,7 @@ final class BubbleModel: ObservableObject {
         inboxTriageList = []
         selectedPeerUserId = ""
         favoritePeerUserIdsOrdered = []
+        mutedPeerUserIds = []
         lastInboxMessageId = 0
         lastRailwayError = nil
         clearAddContactUserIdLookup()
@@ -776,7 +878,8 @@ final class BubbleModel: ObservableObject {
         do {
             let rows = try await RailwayClient.fetchInbox(baseURL: base, token: tok, afterId: lastInboxMessageId)
             guard let maxId = rows.map(\.id).max(), maxId > lastInboxMessageId else { return }
-            let newOnes = rows.filter { $0.id > lastInboxMessageId }.sorted { $0.id < $1.id }
+            let allNew = rows.filter { $0.id > lastInboxMessageId }.sorted { $0.id < $1.id }
+            let newOnes = globallyMuted ? [] : allNew.filter { !isPeerMuted($0.senderUserId) }
             lastInboxMessageId = maxId
             let skipReveal = isInboxPollWarmup
             isInboxPollWarmup = false
@@ -855,6 +958,7 @@ final class BubbleModel: ObservableObject {
         sourceFolderURL = nil
         folderImageURLs = []
         UserDefaults.standard.removeObject(forKey: Self.folderBookmarkKey)
+        UserDefaults.standard.removeObject(forKey: Self.folderPathKey)
     }
 
     func refreshFolderListing() {
@@ -890,23 +994,166 @@ final class BubbleModel: ObservableObject {
         let trimmed = emojiField.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         stickerSource = .text(trimmed)
-        emojiField = ""
         onStickerChanged?()
     }
 
     func loadSticker(url: URL) {
         stickerSource = .url(url)
+        emojiField = ""
+        receivedFromName = nil
         onStickerChanged?()
     }
 
     func loadSticker(image: NSImage) {
         stickerSource = .image(image)
+        emojiField = ""
+        receivedFromName = nil
         onStickerChanged?()
     }
 
     func clearSticker() {
         stickerSource = nil
+        emojiField = ""
+        receivedFromName = nil
         onStickerChanged?()
+    }
+
+    @discardableResult
+    func copyCurrentStickerToPasteboard() -> Bool {
+        guard let source = stickerSource else { return false }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        switch source {
+        case .text(let s):
+            return pb.setString(s, forType: .string)
+        case .image(let img):
+            if let bitmap = img.representations.first as? NSBitmapImageRep,
+               let frames = bitmap.value(forProperty: .frameCount) as? Int, frames > 1,
+               let gifData = bitmap.representation(using: .gif, properties: [:])
+            {
+                return Self.writeGifWithPNGFallback(gifData: gifData, image: img, to: pb)
+            }
+            return pb.writeObjects([img])
+        case .url(let u):
+            if let bytes = try? Data(contentsOf: u) {
+                if Self.isGifData(bytes) {
+                    return Self.writeGifWithPNGFallback(gifData: bytes, image: NSImage(data: bytes), to: pb)
+                }
+                if let img = NSImage(data: bytes) {
+                    return pb.writeObjects([img])
+                }
+            }
+            return pb.writeObjects([u as NSURL])
+        }
+    }
+
+    private static func isGifData(_ bytes: Data) -> Bool {
+        bytes.count >= 4 && bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x38
+    }
+
+    private static func writeGifWithPNGFallback(gifData: Data, image: NSImage?, to pb: NSPasteboard) -> Bool {
+        let item = NSPasteboardItem()
+        item.setData(gifData, forType: NSPasteboard.PasteboardType("com.compuserve.gif"))
+        if let img = image,
+           let tiff = img.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:])
+        {
+            item.setData(png, forType: .png)
+        }
+        return pb.writeObjects([item])
+    }
+
+    @discardableResult
+    func saveCurrentStickerToSourceFolder() async -> URL? {
+        guard let folder = sourceFolderURL else {
+            lastRailwayError = "Choose a sticker folder first."
+            return nil
+        }
+        guard let source = stickerSource else { return nil }
+
+        do {
+            let data: Data
+            let baseName: String
+            let ext: String
+            switch source {
+            case .url(let u):
+                data = try Data(contentsOf: u)
+                if u.isFileURL {
+                    baseName = u.deletingPathExtension().lastPathComponent
+                    ext = u.pathExtension.isEmpty ? "png" : u.pathExtension
+                } else {
+                    baseName = "Sticker-\(Self.stickerTimestamp())"
+                    ext = u.pathExtension.isEmpty ? "png" : u.pathExtension
+                }
+            case .image(let img):
+                guard let png = pngData(from: img) else {
+                    lastRailwayError = "Could not encode image."
+                    return nil
+                }
+                data = png
+                baseName = "Sticker-\(Self.stickerTimestamp())"
+                ext = "png"
+            case .text:
+                return nil
+            }
+
+            if let existing = folderFile(matching: data) {
+                lastRailwayError = "Already in your sticker folder as \(existing.lastPathComponent)."
+                return nil
+            }
+
+            let candidate = folder.appendingPathComponent("\(baseName).\(ext)")
+            let dest = Self.uniqueDestination(for: candidate)
+            try data.write(to: dest)
+            refreshFolderListing()
+            lastRailwayError = nil
+            return dest
+        } catch {
+            lastRailwayError = error.localizedDescription
+            return nil
+        }
+    }
+
+    private func folderFile(matching data: Data) -> URL? {
+        guard let folder = sourceFolderURL else { return nil }
+        let target = data.count
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: folder,
+            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return nil }
+
+        while let item = enumerator.nextObject() as? URL {
+            guard let isFile = try? item.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile, isFile else { continue }
+            guard let size = try? item.resourceValues(forKeys: [.fileSizeKey]).fileSize, size == target else { continue }
+            if let existing = try? Data(contentsOf: item), existing == data {
+                return item
+            }
+        }
+        return nil
+    }
+
+    private static func stickerTimestamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        return f.string(from: Date())
+    }
+
+    private static func uniqueDestination(for url: URL) -> URL {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return url }
+        let dir = url.deletingLastPathComponent()
+        let base = url.deletingPathExtension().lastPathComponent
+        let ext = url.pathExtension
+        var counter = 2
+        while true {
+            let suffix = ext.isEmpty ? "\(base)-\(counter)" : "\(base)-\(counter).\(ext)"
+            let candidate = dir.appendingPathComponent(suffix)
+            if !fm.fileExists(atPath: candidate.path) { return candidate }
+            counter += 1
+        }
     }
 
     func loadFromPasteboard() {
@@ -919,12 +1166,49 @@ final class BubbleModel: ObservableObject {
         }
         if let image = NSImage(pasteboard: pb) {
             loadSticker(image: image)
+            return
+        }
+        if let text = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !text.isEmpty
+        {
+            if let url = URL(string: text),
+               let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+               url.host != nil
+            {
+                loadSticker(url: url)
+                return
+            }
+            loadSticker(text: Self.wrapForDetectedKind(text))
+        }
+    }
+
+    func loadSticker(text: String) {
+        emojiField = ""
+        stickerSource = .text(text)
+        receivedFromName = nil
+        onStickerChanged?()
+    }
+
+    private static func wrapForDetectedKind(_ text: String) -> String {
+        if text.contains("```") || text.contains("$$") { return text }
+        switch StickerDisplay.autoDetectKind(text) {
+        case .code: return "```\n\(text)\n```"
+        case .formula: return "$$\n\(text)\n$$"
+        case .plain: return text
         }
     }
 
     private func restoreSourceFolder() {
-        guard let data = UserDefaults.standard.data(forKey: Self.folderBookmarkKey) else { return }
+        if let path = UserDefaults.standard.string(forKey: Self.folderPathKey) {
+            let url = URL(fileURLWithPath: path)
+            if FileManager.default.fileExists(atPath: url.path) {
+                sourceFolderURL = url
+                refreshFolderListing()
+                return
+            }
+        }
 
+        guard let data = UserDefaults.standard.data(forKey: Self.folderBookmarkKey) else { return }
         var stale = false
         guard
             let url = try? URL(
@@ -935,27 +1219,14 @@ final class BubbleModel: ObservableObject {
         else {
             return
         }
-
-        if stale {
-            persistFolderBookmark(for: url)
-        }
-
         isAccessingSourceFolder = url.startAccessingSecurityScopedResource()
         sourceFolderURL = url
+        UserDefaults.standard.set(url.path, forKey: Self.folderPathKey)
         refreshFolderListing()
     }
 
     private func persistFolderBookmark(for url: URL) {
-        do {
-            let data = try url.bookmarkData(
-                options: .withSecurityScope,
-                includingResourceValuesForKeys: nil,
-                relativeTo: nil
-            )
-            UserDefaults.standard.set(data, forKey: Self.folderBookmarkKey)
-        } catch {
-            // Non–sandboxed runs may still persist path for next session via bookmark when possible.
-        }
+        UserDefaults.standard.set(url.path, forKey: Self.folderPathKey)
     }
 
     private func stopAccessingSourceFolderIfNeeded() {

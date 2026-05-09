@@ -7,6 +7,11 @@ struct ChatBubbleView: View {
     var onClose: () -> Void
 
     @FocusState private var isEmojiFieldFocused: Bool
+    @FocusState private var isCodeEditorFocused: Bool
+    @State private var isCloseHovered = false
+    @State private var isSettingsHovered = false
+    @State private var isMuteHovered = false
+    @State private var showEmojiPicker = false
     @State private var isChoosingFolder = false
     @State private var showGridPicker = false
     @State private var showWebStickerSheet = false
@@ -164,10 +169,6 @@ struct ChatBubbleView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
-
-                Text("Tap the blue send button to deliver.")
-                    .font(.system(.caption2, design: .rounded))
-                    .foregroundStyle(.tertiary)
             }
 
             if let err = model.lastRailwayError, !err.isEmpty {
@@ -190,15 +191,25 @@ struct ChatBubbleView: View {
     private var stickerCard: some View {
         Group {
             if let source = model.stickerSource {
-                StickerDisplay(source: source)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 44)
-                    .padding(.bottom, model.isReceivingMode ? 44 : 318)
+                if isCodeBlock(source) {
+                    codeBlockEditor
+                        .padding(.horizontal, 12)
+                        .padding(.top, 44)
+                        .padding(.bottom, model.isReceivingMode ? 44 : 240)
+                } else {
+                    StickerDisplay(source: source, expanded: $model.stickerExpanded)
+                        .simultaneousGesture(TapGesture().onEnded {
+                            isEmojiFieldFocused = false
+                        })
+                        .padding(.horizontal, 12)
+                        .padding(.top, 44)
+                        .padding(.bottom, model.isReceivingMode ? 44 : 240)
+                }
             } else {
                 emptyDropZone
                     .padding(.horizontal, 12)
                     .padding(.top, 40)
-                    .padding(.bottom, model.isReceivingMode ? 40 : 306)
+                    .padding(.bottom, model.isReceivingMode ? 40 : 228)
             }
         }
         .frame(width: StickerCardLayout.defaultFrameWidth)
@@ -207,6 +218,55 @@ struct ChatBubbleView: View {
                 .fill(.regularMaterial)
         }
         .overlay(alignment: .topLeading) {
+            HStack(spacing: 6) {
+                Button(action: onClose) {
+                    Image(systemName: "xmark.circle.fill")
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(isCloseHovered ? Color.red : Color.secondary)
+                        .font(.system(size: 18, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .onHover { isCloseHovered = $0 }
+                .help("Hide bubble")
+
+                Button {
+                    (NSApp.delegate as? AppDelegate)?.openAccountAndSync()
+                } label: {
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: "person.circle.fill")
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(isSettingsHovered ? Color.purple : Color.secondary)
+                            .font(.system(size: 18, weight: .medium))
+                        if !model.incomingContactRequests.isEmpty {
+                            Circle()
+                                .fill(Color.red.opacity(0.95))
+                                .frame(width: 7, height: 7)
+                                .offset(x: 3, y: -2)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .onHover { isSettingsHovered = $0 }
+                .help("Settings — account, server, contacts, inbox")
+
+                Button {
+                    model.globallyMuted.toggle()
+                } label: {
+                    let active = model.globallyMuted || isMuteHovered
+                    Image(systemName: model.globallyMuted ? "bell.slash.circle.fill" : "bell.circle.fill")
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(active ? Color(red: 0.70, green: 0.45, blue: 0.05) : Color.secondary)
+                        .font(.system(size: 18, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .onHover { isMuteHovered = $0 }
+                .help(model.globallyMuted ? "Unmute — bubble pops on new messages" : "Mute all — silence the bubble")
+                .accessibilityLabel(model.globallyMuted ? "Unmute all" : "Mute all")
+            }
+            .padding(.leading, 10)
+            .padding(.top, 10)
+        }
+        .overlay(alignment: .topTrailing) {
             HStack(spacing: 6) {
                 Button {
                     isChoosingFolder = true
@@ -255,56 +315,82 @@ struct ChatBubbleView: View {
                     .help("Open sticker grid (\(model.folderImageURLs.count))")
                     .disabled(model.folderImageURLs.isEmpty)
                 }
-            }
-            .padding(.leading, 10)
-            .padding(.top, 10)
-            .padding(.trailing, 76)
-        }
-        .overlay(alignment: .topTrailing) {
-            HStack(spacing: 6) {
-                Button {
-                    (NSApp.delegate as? AppDelegate)?.openAccountAndSync()
-                } label: {
-                    ZStack(alignment: .topTrailing) {
-                        Image(systemName: "person.circle.fill")
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(.secondary)
-                            .font(.system(size: 18, weight: .medium))
-                        if !model.incomingContactRequests.isEmpty {
-                            Circle()
-                                .fill(Color.red.opacity(0.95))
-                                .frame(width: 7, height: 7)
-                                .offset(x: 3, y: -2)
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
-                .help("Settings — account, server, contacts, inbox")
 
-                Button(action: onClose) {
-                    Image(systemName: "xmark.circle.fill")
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(.secondary)
-                        .font(.system(size: 18, weight: .medium))
+                if canSaveCurrentSticker {
+                    Button {
+                        Task { await model.saveCurrentStickerToSourceFolder() }
+                    } label: {
+                        Image(systemName: "square.and.arrow.down")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Save sticker to folder")
                 }
-                .buttonStyle(.plain)
-                .help("Hide bubble")
+
+                if model.stickerSource != nil {
+                    Button {
+                        model.copyCurrentStickerToPasteboard()
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy sticker to clipboard")
+                }
             }
             .padding(.trailing, 10)
             .padding(.top, 10)
+            .padding(.leading, 76)
         }
-        .overlay(alignment: .bottomLeading) {
+        .overlay(alignment: .bottom) {
             if !model.isReceivingMode {
                 VStack(alignment: .leading, spacing: 10) {
                     sendToInnerChrome
 
                     HStack(alignment: .center, spacing: 8) {
-                        TextField("Type emoji or short text…", text: Binding(
-                            get: { model.emojiField },
-                            set: { model.emojiField = $0 }
-                        ))
+                        Button {
+                            showEmojiPicker.toggle()
+                        } label: {
+                            Image(systemName: "face.smiling")
+                                .font(.system(size: 22, weight: .regular))
+                                .symbolRenderingMode(.hierarchical)
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .focusable(false)
+                        .help("Emoji picker")
+                        .accessibilityLabel("Emoji picker")
+                        .popover(isPresented: $showEmojiPicker, arrowEdge: .top) {
+                            CustomEmojiPicker { emoji in
+                                handleEmojiPick(emoji)
+                            }
+                        }
+
+                        Button {
+                            toggleCodeBlockWrap()
+                        } label: {
+                            Text("//")
+                                .font(.system(size: 16, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 22, height: 22)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Wrap text as code block")
+                        .accessibilityLabel("Wrap as code block")
+
+                        TextField(
+                            "Type emoji or short text…",
+                            text: Binding(
+                                get: { model.emojiField },
+                                set: { model.emojiField = $0 }
+                            )
+                        )
                         .focused($isEmojiFieldFocused)
                         .textFieldStyle(.roundedBorder)
+                        .disabled(isStickerCodeBlock)
+                        .opacity(isStickerCodeBlock ? 0.5 : 1)
                         .onSubmit {
                             Task { await model.performSend() }
                         }
@@ -321,14 +407,17 @@ struct ChatBubbleView: View {
                         .help("Send — sticker or text goes to the contact chosen in Send to when signed in; otherwise updates the preview.")
                         .accessibilityLabel("Send")
                     }
-
-                    Text("Preview only — not delivered.")
-                        .font(.system(.caption2, design: .rounded))
-                        .foregroundStyle(.tertiary)
                 }
-                .padding(.leading, 12)
-                .padding(.trailing, 12)
-                .padding(.bottom, 12)
+                .padding(.horizontal, 14)
+                .padding(.top, 14)
+                .padding(.bottom, 14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.ultraThinMaterial)
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.08))
+                        .frame(height: 0.5)
+                }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
@@ -349,14 +438,6 @@ struct ChatBubbleView: View {
                 receivedBanner(name: name)
                     .padding(.top, 10)
                     .transition(.move(edge: .top).combined(with: .opacity))
-                    .onAppear {
-                        Task {
-                            try? await Task.sleep(nanoseconds: 3_000_000_000)
-                            withAnimation(.easeOut(duration: 0.3)) {
-                                model.receivedFromName = nil
-                            }
-                        }
-                    }
             }
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.75), value: model.receivedFromName != nil)
@@ -404,6 +485,74 @@ struct ChatBubbleView: View {
         return accepted
     }
 
+    private func handleEmojiPick(_ emoji: String) {
+        model.emojiField += emoji
+        isEmojiFieldFocused = true
+    }
+
+    private func toggleCodeBlockWrap() {
+        if case .text(let current) = model.stickerSource,
+           current.hasPrefix("```"), current.hasSuffix("```")
+        {
+            var stripped = current
+            if stripped.hasPrefix("```\n") { stripped.removeFirst(4) } else { stripped.removeFirst(3) }
+            if stripped.hasSuffix("\n```") { stripped.removeLast(4) } else { stripped.removeLast(3) }
+            model.unwrapStickerToField(stripped)
+            DispatchQueue.main.async { isEmojiFieldFocused = true }
+        } else {
+            let inner = model.emojiField.trimmingCharacters(in: .whitespacesAndNewlines)
+            model.setStickerTextAndClearField("```\n\(inner)\n```")
+            DispatchQueue.main.async { isCodeEditorFocused = true }
+        }
+    }
+
+    private func isCodeBlock(_ source: StickerSource) -> Bool {
+        if case .text(let s) = source, s.hasPrefix("```"), s.hasSuffix("```") { return true }
+        return false
+    }
+
+    private var isStickerCodeBlock: Bool {
+        guard let s = model.stickerSource else { return false }
+        return isCodeBlock(s)
+    }
+
+    private var codeBlockEditor: some View {
+        TextEditor(text: codeBlockBinding)
+            .focused($isCodeEditorFocused)
+            .font(.system(size: 12, design: .monospaced))
+            .scrollContentBackground(.hidden)
+            .foregroundStyle(Color(white: 0.92))
+            .padding(10)
+            .frame(width: StickerCardLayout.mediaTargetWidth, height: 280)
+            .background {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.black.opacity(0.78))
+            }
+    }
+
+    private var codeBlockBinding: Binding<String> {
+        Binding(
+            get: {
+                guard case .text(let s) = model.stickerSource else { return "" }
+                var t = s
+                if t.hasPrefix("```\n") { t.removeFirst(4) } else if t.hasPrefix("```") { t.removeFirst(3) }
+                if t.hasSuffix("\n```") { t.removeLast(4) } else if t.hasSuffix("```") { t.removeLast(3) }
+                return t
+            },
+            set: { newInner in
+                model.stickerSource = .text("```\n\(newInner)\n```")
+            }
+        )
+    }
+
+    private var canSaveCurrentSticker: Bool {
+        guard model.sourceFolderURL != nil else { return false }
+        switch model.stickerSource {
+        case .url, .image: return true
+        case .text, .none: return false
+        }
+    }
+
     /// Latest server list before showing the contact picker (Contacts button or after add).
     private func refreshContactsThenOpenPicker() {
         Task {
@@ -448,24 +597,16 @@ struct ChatBubbleView: View {
             }
 
             Spacer(minLength: 0)
-
-            Button {
-                withAnimation(.easeOut(duration: 0.2)) {
-                    model.receivedFromName = nil
-                }
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(.secondary)
-                    .font(.system(size: 16))
-            }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.regularMaterial, in: Capsule())
+        .padding(.vertical, 10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+        }
         .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 14)
     }
 
     private var meChip: some View {
@@ -635,6 +776,17 @@ private struct ContactPickModalView: View {
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
+
+                                Button {
+                                    model.toggleMutePeer(c.peerUserId)
+                                } label: {
+                                    Image(systemName: model.isPeerMuted(c.peerUserId) ? "bell.slash.fill" : "bell")
+                                        .font(.system(size: 16, weight: .medium))
+                                        .foregroundStyle(model.isPeerMuted(c.peerUserId) ? Color.orange : Color.secondary)
+                                        .accessibilityLabel(model.isPeerMuted(c.peerUserId) ? "Unmute" : "Mute")
+                                }
+                                .buttonStyle(.plain)
+                                .help(model.isPeerMuted(c.peerUserId) ? "Unmute — bubble pops when they send" : "Mute — incoming messages won't pop the bubble")
 
                                 Button {
                                     model.toggleFavoritePeer(peerUserId: c.peerUserId)

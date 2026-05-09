@@ -1,6 +1,11 @@
 import AppKit
 import SwiftUI
 
+@objc private protocol UndoActionResponding {
+    func undo(_ sender: Any?)
+    func redo(_ sender: Any?)
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var bubbleController: BubblePanelController?
@@ -84,18 +89,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func buildEditMenu() -> NSMenu {
         let edit = NSMenu(title: "Edit")
 
-        let undo = NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-        let redo = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        let undo = NSMenuItem(title: "Undo", action: #selector(UndoActionResponding.undo(_:)), keyEquivalent: "z")
+        let redo = NSMenuItem(title: "Redo", action: #selector(UndoActionResponding.redo(_:)), keyEquivalent: "Z")
         redo.keyEquivalentModifierMask = [.command, .shift]
         edit.addItem(undo)
         edit.addItem(redo)
         edit.addItem(.separator())
 
-        edit.addItem(withTitle: "Cut", action: Selector(("cut:")), keyEquivalent: "x")
-        edit.addItem(withTitle: "Copy", action: Selector(("copy:")), keyEquivalent: "c")
-        edit.addItem(withTitle: "Paste", action: Selector(("paste:")), keyEquivalent: "v")
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         edit.addItem(.separator())
-        edit.addItem(withTitle: "Select All", action: Selector(("selectAll:")), keyEquivalent: "a")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
 
         for item in edit.items {
             guard !item.isSeparatorItem else { continue }

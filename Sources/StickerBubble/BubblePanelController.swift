@@ -18,6 +18,7 @@ final class BubblePanelController: NSObject {
     private var mouseDraggedMonitor: Any?
     private var mouseUpMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
+    private var isClampingFrameChange = false
 
     /// Screen-space anchor when a drag that may move the window began.
     private var windowDragScreenAnchor: NSPoint?
@@ -53,7 +54,7 @@ final class BubblePanelController: NSObject {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        panel.hasShadow = false
         // Custom drag (see mouse monitors) so stickers, chrome, and recipient chrome move the window;
         // leave false to avoid fighting with programmatic origin updates.
         panel.isMovableByWindowBackground = false
@@ -75,6 +76,17 @@ final class BubblePanelController: NSObject {
                 }
             }
             .store(in: &cancellables)
+
+        model.$stickerExpanded
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    self?.resizePanelToFitContent()
+                }
+            }
+            .store(in: &cancellables)
+
         model.onSendSuccess = { [weak self] in
             self?.hide()
         }
@@ -87,22 +99,65 @@ final class BubblePanelController: NSObject {
 
         keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
-            // Only handle keys we care about; everything else goes through unchanged (including ⌘V for Edit → paste:).
             if event.keyCode == 53 {
                 self.hide()
                 return nil
             }
-            if event.modifierFlags.contains(.command),
-               event.modifierFlags.contains(.shift),
-               event.charactersIgnoringModifiers?.lowercased() == "v"
-            {
+
+            let chars = event.charactersIgnoringModifiers?.lowercased()
+            let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let cmdOnly = mods == .command
+            let cmdShift = mods == [.command, .shift]
+
+            if cmdShift, chars == "v" {
                 self.model.loadFromPasteboard()
                 return nil
+            }
+
+            if cmdOnly, event.keyCode == 36 {
+                Task { await self.model.performSend() }
+                return nil
+            }
+
+            if cmdOnly {
+                switch chars {
+                case "c":
+                    // Don't override Cmd+C while the text field is focused — let it copy the field's text.
+                    if !self.isTextEditorFocused, self.model.stickerSource != nil {
+                        self.model.copyCurrentStickerToPasteboard()
+                        return nil
+                    }
+                case "s":
+                    Task { await self.model.saveCurrentStickerToSourceFolder() }
+                    return nil
+                case "f":
+                    self.model.stickerExpanded.toggle()
+                    return nil
+                default:
+                    break
+                }
             }
             return event
         }
 
         installWindowDragMonitors()
+
+        NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.model.isReceivingMode = true }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.model.isReceivingMode = false }
+            .store(in: &cancellables)
+
+
+        NotificationCenter.default.publisher(for: NSWindow.didResizeNotification, object: panel)
+            .merge(with: NotificationCenter.default.publisher(for: NSWindow.didMoveNotification, object: panel))
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.clampPanelIfNeeded() }
+            .store(in: &cancellables)
     }
 
     func teardown() {
@@ -115,8 +170,15 @@ final class BubblePanelController: NSObject {
     }
 
     func show() {
+        model.isReceivingMode = false
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            guard let screen = self.panel.screen ?? NSScreen.main else { return }
+            let vf = screen.visibleFrame
+            self.panel.setFrame(self.clampedFrame(self.panel.frame, to: vf), display: false)
+        }
     }
 
     func hide() {
@@ -149,8 +211,8 @@ final class BubblePanelController: NSObject {
         let screen = panel.screen ?? NSScreen.main
         let vf = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let fitting = hostingView.fittingSize
-        let width = max(360, min(560, fitting.width))
-        let height = max(260, min(vf.height * 0.93, fitting.height))
+        let width = StickerCardLayout.defaultFrameWidth + 36
+        let height = max(260, min(vf.height, fitting.height))
         var frame = panel.frame
         let deltaY = frame.height - height
         frame.size = NSSize(width: width, height: height)
@@ -158,8 +220,22 @@ final class BubblePanelController: NSObject {
         panel.setFrame(clampedFrame(frame, to: vf), display: true)
     }
 
+    private func clampPanelIfNeeded() {
+        guard !isClampingFrameChange else { return }
+        let screen = panel.screen ?? NSScreen.main
+        guard let vf = screen?.visibleFrame else { return }
+        let clamped = clampedFrame(panel.frame, to: vf)
+        guard clamped != panel.frame else { return }
+        isClampingFrameChange = true
+        panel.setFrame(clamped, display: false)
+        isClampingFrameChange = false
+    }
+
     private func clampedFrame(_ frame: NSRect, to vf: NSRect) -> NSRect {
         var f = frame
+        // Cap size to visible frame before adjusting origin
+        f.size.width = min(f.size.width, vf.width)
+        f.size.height = min(f.size.height, vf.height)
         // Horizontal
         f.origin.x = max(vf.minX, min(f.origin.x, vf.maxX - f.width))
         // Vertical: push up if bottom clips, then push down if top still clips
@@ -173,6 +249,7 @@ final class BubblePanelController: NSObject {
     private func installWindowDragMonitors() {
         mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
             guard let self, event.window === self.panel else { return event }
+            if self.model.receivedFromName != nil { self.model.receivedFromName = nil }
             self.resetWindowDragState()
             let hit = self.hitViewInPanelContent(for: event)
             self.windowDragAllowedFromHit = self.shouldAllowWindowDrag(from: hit)
@@ -202,7 +279,14 @@ final class BubblePanelController: NSObject {
                 self.windowDragMovedPastSlop = true
             }
 
-            self.panel.setFrameOrigin(NSPoint(x: originAnchor.x + dx, y: originAnchor.y + dy))
+            let newOrigin = NSPoint(x: originAnchor.x + dx, y: originAnchor.y + dy)
+            let screen = self.panel.screen ?? NSScreen.main
+            if let vf = screen?.visibleFrame {
+                let proposed = NSRect(origin: newOrigin, size: self.panel.frame.size)
+                self.panel.setFrameOrigin(self.clampedFrame(proposed, to: vf).origin)
+            } else {
+                self.panel.setFrameOrigin(newOrigin)
+            }
             return event
         }
 
@@ -236,6 +320,10 @@ final class BubblePanelController: NSObject {
         windowDragOriginAnchor = nil
         windowDragAllowedFromHit = false
         windowDragMovedPastSlop = false
+    }
+
+    private var isTextEditorFocused: Bool {
+        panel.firstResponder is NSText
     }
 
     private func hitViewInPanelContent(for event: NSEvent) -> NSView? {

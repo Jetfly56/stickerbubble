@@ -3,6 +3,10 @@
 .swiftpm/xcode/
 *.xcodeproj/xcuserdata/
 
+# Build output
+*.app/
+*.zip
+
 # Server
 railway-server/node_modules/
 railway-server/.env
