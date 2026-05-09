@@ -28,6 +28,8 @@ struct RailwayInboxMessage: Codable, Equatable {
     let recipientDeviceId: String
     let stickerUrl: String?
     let body: String?
+    /// Name the sender chose in their Mac app (optional; older rows may be nil).
+    let senderDisplayName: String?
 }
 
 enum RailwayClient {
@@ -70,7 +72,8 @@ enum RailwayClient {
         stickerURL: String?,
         body: String?,
         mediaBase64: String?,
-        mediaContentType: String?
+        mediaContentType: String?,
+        senderDisplayName: String?
     ) async throws {
         let url = try joinURL(base: baseURL, path: "/api/messages")
         var req = URLRequest(url: url)
@@ -84,6 +87,7 @@ enum RailwayClient {
             let body: String?
             let mediaBase64: String?
             let mediaContentType: String?
+            let senderDisplayName: String?
         }
 
         let payload = Body(
@@ -92,7 +96,8 @@ enum RailwayClient {
             stickerUrl: stickerURL,
             body: body,
             mediaBase64: mediaBase64,
-            mediaContentType: mediaContentType
+            mediaContentType: mediaContentType,
+            senderDisplayName: senderDisplayName
         )
         let enc = JSONEncoder()
         enc.keyEncodingStrategy = .convertToSnakeCase

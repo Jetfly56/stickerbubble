@@ -28,11 +28,11 @@ final class BubbleModel: ObservableObject {
 
     // MARK: - Railway sync
 
-    @Published var railwayBaseURL: String = UserDefaults.standard.string(forKey: Self.railwayURLKey) ?? ""
+    @Published var railwayBaseURL: String = UserDefaults.standard.string(forKey: BubbleModel.railwayURLKey) ?? ""
     /// Stable account identity on the server (persisted).
     @Published var deviceId: String
-    /// Optional label for yourself (local only; share device ID with friends).
-    @Published var localDisplayName: String = UserDefaults.standard.string(forKey: Self.localDisplayNameKey) ?? ""
+    /// Shown in your UI and sent with each server message so recipients see who it is from.
+    @Published var localDisplayName: String = UserDefaults.standard.string(forKey: BubbleModel.localDisplayNameKey) ?? ""
     @Published var remoteContacts: [RailwayRemoteContact] = []
     /// Latest inbox rows for triage UI (does not affect poll cursor).
     @Published var inboxTriageList: [RailwayInboxMessage] = []
@@ -65,6 +65,31 @@ final class BubbleModel: ObservableObject {
         UserDefaults.standard.set(localDisplayName, forKey: Self.localDisplayNameKey)
     }
 
+    /// Letters, numbers, `.`, `_`, `-` only; length 2…64. Used for your device ID and recommended for peers.
+    static func normalizedDeviceId(_ raw: String) -> String? {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (2 ... 64).contains(t.count) else { return nil }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+        guard t.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
+        return t
+    }
+
+    /// Persist a custom device ID. Returns `nil` on success, or a user-visible error string.
+    func applyDeviceId(_ raw: String) -> String? {
+        guard let normalized = Self.normalizedDeviceId(raw) else {
+            return "Device ID must be 2–64 characters: letters, numbers, period, underscore, or hyphen."
+        }
+        if normalized != deviceId {
+            UserDefaults.standard.set(normalized, forKey: Self.railwayDeviceKey)
+            deviceId = normalized
+            lastInboxMessageId = 0
+            inboxTriageList = []
+            remoteContacts = []
+            startRailwayPollIfConfigured()
+        }
+        return nil
+    }
+
     /// New random device ID (breaks existing contact links — confirm in UI first).
     func regenerateDeviceId() {
         let fresh = UUID().uuidString
@@ -74,6 +99,11 @@ final class BubbleModel: ObservableObject {
         inboxTriageList = []
         remoteContacts = []
         startRailwayPollIfConfigured()
+    }
+
+    private var outboundSenderDisplayName: String? {
+        let s = localDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return s.isEmpty ? nil : s
     }
 
     func refreshInboxTriage() async {
@@ -101,12 +131,29 @@ final class BubbleModel: ObservableObject {
             lastRailwayError = "Peer device ID is required."
             return
         }
+        if Self.normalizedDeviceId(peer) == nil {
+            lastRailwayError = "Peer device ID must be 2–64 characters: letters, numbers, period, underscore, or hyphen."
+            return
+        }
+        if name.isEmpty {
+            await refreshInboxTriage()
+        }
+        let resolvedName: String = {
+            if !name.isEmpty { return name }
+            if let row = inboxTriageList.first(where: { $0.senderDeviceId == peer }),
+               let inferred = row.senderDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !inferred.isEmpty
+            {
+                return inferred
+            }
+            return peer
+        }()
         do {
             try await RailwayClient.upsertContact(
                 baseURL: base,
                 ownerDeviceId: deviceId,
                 peerDeviceId: peer,
-                displayName: name.isEmpty ? "Contact" : name
+                displayName: resolvedName
             )
             await refreshRemoteContacts()
             lastRailwayError = nil
@@ -187,7 +234,8 @@ final class BubbleModel: ObservableObject {
                     stickerURL: u.absoluteString,
                     body: nil,
                     mediaBase64: nil,
-                    mediaContentType: nil
+                    mediaContentType: nil,
+                    senderDisplayName: outboundSenderDisplayName
                 )
             case .text(let t):
                 try await RailwayClient.postMessage(
@@ -197,7 +245,8 @@ final class BubbleModel: ObservableObject {
                     stickerURL: nil,
                     body: t,
                     mediaBase64: nil,
-                    mediaContentType: nil
+                    mediaContentType: nil,
+                    senderDisplayName: outboundSenderDisplayName
                 )
             case .image(let image):
                 guard let data = pngData(from: image) else {
@@ -211,7 +260,8 @@ final class BubbleModel: ObservableObject {
                     stickerURL: nil,
                     body: nil,
                     mediaBase64: data.base64EncodedString(),
-                    mediaContentType: "image/png"
+                    mediaContentType: "image/png",
+                    senderDisplayName: outboundSenderDisplayName
                 )
             }
             lastRailwayError = nil
@@ -237,6 +287,12 @@ final class BubbleModel: ObservableObject {
     }
 
     private func applyInboxMessage(_ msg: RailwayInboxMessage) {
+        let senderLabel = msg.senderDisplayName.flatMap { n in
+            let t = n.trimmingCharacters(in: .whitespacesAndNewlines)
+            return t.isEmpty ? nil : t
+        } ?? msg.senderDeviceId
+        recipientName = senderLabel
+
         if let s = msg.stickerUrl, !s.isEmpty {
             if s.hasPrefix("data:"), let img = Self.image(fromDataURL: s) {
                 stickerSource = .image(img)

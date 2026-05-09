@@ -73,8 +73,8 @@ struct ChatBubbleView: View {
             if model.remoteContacts.isEmpty {
                 Text(
                     model.railwayBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        ? "Open Account & sync… in the StickerBubble menu to set your server URL and add contacts."
-                        : "No contacts yet — use Account & sync… in the menu, or Refresh contacts after adding some."
+                        ? "Tap Account & sync… below (or StickerBubble in the menu bar) to set your server URL and add contacts."
+                        : "No contacts yet — tap Account & sync… below or use the StickerBubble menu, then Refresh contacts."
                 )
                 .font(.system(.caption, design: .rounded))
                 .foregroundStyle(.secondary)
@@ -96,6 +96,10 @@ struct ChatBubbleView: View {
 
                 Button("Refresh contacts") {
                     Task { await model.refreshRemoteContacts() }
+                }
+
+                Button("Account & sync…") {
+                    (NSApp.delegate as? AppDelegate)?.openAccountAndSync()
                 }
             }
 

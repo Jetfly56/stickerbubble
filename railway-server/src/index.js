@@ -40,6 +40,9 @@ async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+  await pool.query(
+    `ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_display_name TEXT`
+  );
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages (recipient_device_id, id);`);
 }
 
@@ -100,10 +103,22 @@ app.delete("/api/contacts/:id", async (req, res) => {
 
 /** Send a sticker (URL), plain text, or tiny base64 image. */
 app.post("/api/messages", async (req, res) => {
-  const { sender_device_id, recipient_device_id, sticker_url, body, media_base64, media_content_type } = req.body || {};
+  const {
+    sender_device_id,
+    recipient_device_id,
+    sticker_url,
+    body,
+    media_base64,
+    media_content_type,
+    sender_display_name,
+  } = req.body || {};
   if (!sender_device_id || !recipient_device_id) {
     return res.status(400).json({ error: "sender_device_id and recipient_device_id required" });
   }
+  const senderLabel =
+    sender_display_name != null && String(sender_display_name).trim() !== ""
+      ? String(sender_display_name).trim().slice(0, 120)
+      : null;
   let url = sticker_url ? String(sticker_url).trim() : null;
   const textBody = body != null && String(body).trim() !== "" ? String(body) : null;
 
@@ -115,9 +130,15 @@ app.post("/api/messages", async (req, res) => {
       }
       const ct = (media_content_type || "application/octet-stream").toString().slice(0, 120);
       const { rows } = await pool.query(
-        `INSERT INTO messages (sender_device_id, recipient_device_id, sticker_url, body)
-         VALUES ($1, $2, $3, $4) RETURNING id, created_at`,
-        [String(sender_device_id).trim(), String(recipient_device_id).trim(), `data:${ct};base64,${buf.toString("base64")}`, textBody]
+        `INSERT INTO messages (sender_device_id, recipient_device_id, sticker_url, body, sender_display_name)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at`,
+        [
+          String(sender_device_id).trim(),
+          String(recipient_device_id).trim(),
+          `data:${ct};base64,${buf.toString("base64")}`,
+          textBody,
+          senderLabel,
+        ]
       );
       return res.status(201).json({ message: rows[0] });
     } catch (e) {
@@ -132,9 +153,9 @@ app.post("/api/messages", async (req, res) => {
 
   try {
     const { rows } = await pool.query(
-      `INSERT INTO messages (sender_device_id, recipient_device_id, sticker_url, body)
-       VALUES ($1, $2, $3, $4) RETURNING id, created_at`,
-      [String(sender_device_id).trim(), String(recipient_device_id).trim(), url, textBody]
+      `INSERT INTO messages (sender_device_id, recipient_device_id, sticker_url, body, sender_display_name)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at`,
+      [String(sender_device_id).trim(), String(recipient_device_id).trim(), url, textBody, senderLabel]
     );
     res.status(201).json({ message: rows[0] });
   } catch (e) {
@@ -153,7 +174,7 @@ app.get("/api/messages/inbox", async (req, res) => {
   }
   try {
     const { rows } = await pool.query(
-      `SELECT id, sender_device_id, recipient_device_id, sticker_url, body, created_at
+      `SELECT id, sender_device_id, recipient_device_id, sticker_url, body, sender_display_name, created_at
        FROM messages WHERE recipient_device_id = $1 AND id > $2 ORDER BY id ASC LIMIT 100`,
       [String(deviceId).trim(), afterId]
     );
@@ -169,8 +190,11 @@ app.get("/health", (_req, res) => {
 });
 
 async function main() {
-  if (!process.env.DATABASE_URL) {
-    console.warn("WARNING: DATABASE_URL is not set. Create a Postgres service on Railway and link DATABASE_URL.");
+  if (!process.env.DATABASE_URL || !String(process.env.DATABASE_URL).trim()) {
+    console.error(
+      "DATABASE_URL is not set. On Railway: add a Postgres service to this project, then on THIS service open Variables → New variable → Variable reference → choose Postgres → DATABASE_URL. Redeploy."
+    );
+    process.exit(1);
   }
   await initDb();
   app.listen(PORT, () => console.log(`StickerBubble server listening on ${PORT}`));

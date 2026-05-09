@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// In-app account, server URL, contacts, and inbox triage — no browser required.
@@ -8,6 +9,8 @@ struct SyncHubView: View {
     @State private var newContactName = ""
     @State private var newPeerDeviceId = ""
     @State private var serverURLDraft = ""
+    @State private var deviceIdDraft = ""
+    @State private var deviceIdApplyError: String?
     @State private var confirmRegenerateDevice = false
 
     var body: some View {
@@ -29,38 +32,56 @@ struct SyncHubView: View {
         .frame(minWidth: 420, minHeight: 520)
         .onAppear {
             serverURLDraft = model.railwayBaseURL
+            deviceIdDraft = model.deviceId
             Task {
                 await model.refreshRemoteContacts()
                 await model.refreshInboxTriage()
             }
+        }
+        .onReceive(model.$deviceId) { newId in
+            deviceIdDraft = newId
         }
     }
 
     private var accountSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Account")
-            Text("Your device ID is your identity on this server. Share it so others can add you as a contact.")
+            Text("Pick a device ID you share with friends (or keep a random one). Your display name is sent with each sticker so they see who it is from.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            TextField("Your name (optional, local only)", text: $model.localDisplayName)
+            TextField("Display name (sent with messages)", text: $model.localDisplayName)
                 .textFieldStyle(.roundedBorder)
-            Button("Save name") {
+            Button("Save display name") {
                 model.saveLocalDisplayName()
             }
 
-            LabeledContent("Device ID") {
-                Text(model.deviceId)
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
+            TextField("Your device ID (2–64: letters, numbers, . _ -)", text: $deviceIdDraft)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.body, design: .monospaced))
+
+            if let err = deviceIdApplyError, !err.isEmpty {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
 
             HStack(spacing: 10) {
+                Button("Save device ID") {
+                    deviceIdApplyError = model.applyDeviceId(deviceIdDraft)
+                    if deviceIdApplyError == nil {
+                        deviceIdDraft = model.deviceId
+                        Task {
+                            await model.refreshRemoteContacts()
+                            await model.refreshInboxTriage()
+                        }
+                    }
+                }
                 Button("Copy device ID") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(model.deviceId, forType: .string)
                 }
-                Button("Generate new device ID…", role: .destructive) {
+                Button("New random ID…", role: .destructive) {
                     confirmRegenerateDevice = true
                 }
             }
@@ -69,9 +90,11 @@ struct SyncHubView: View {
             Button("Cancel", role: .cancel) {}
             Button("Generate", role: .destructive) {
                 model.regenerateDeviceId()
+                deviceIdDraft = model.deviceId
+                deviceIdApplyError = nil
             }
         } message: {
-            Text("You will get a new ID. Old messages won’t find you; tell contacts your new ID.")
+            Text("You will get a new random ID. Old messages won’t find you; tell contacts your new ID.")
         }
     }
 
@@ -93,11 +116,15 @@ struct SyncHubView: View {
     private var contactsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Contacts")
+            Text("Leave name empty to use the display name from their latest message to you, if any; otherwise their device ID is used as the label.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
             HStack(alignment: .top, spacing: 10) {
-                TextField("Name", text: $newContactName)
+                TextField("Name (optional)", text: $newContactName)
                     .textFieldStyle(.roundedBorder)
                 TextField("Their device ID", text: $newPeerDeviceId)
                     .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
             }
             Button("Add contact") {
                 Task {
@@ -146,17 +173,26 @@ struct SyncHubView: View {
             } else {
                 ForEach(model.inboxTriageList, id: \.id) { msg in
                     VStack(alignment: .leading, spacing: 6) {
-                        HStack {
+                        HStack(alignment: .firstTextBaseline) {
                             Text("#\(msg.id)")
                                 .font(.caption.weight(.semibold))
                             Text("from")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
-                            Text(msg.senderDeviceId)
-                                .font(.caption2)
-                                .monospaced()
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(inboxSenderPrimaryLabel(msg))
+                                    .font(.caption)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                if inboxSenderShowsDeviceId(msg) {
+                                    Text(msg.senderDeviceId)
+                                        .font(.caption2)
+                                        .monospaced()
+                                        .foregroundStyle(.tertiary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                            }
                         }
                         if let b = msg.body, !b.isEmpty {
                             Text(b).font(.caption).lineLimit(2)
@@ -202,5 +238,18 @@ struct SyncHubView: View {
         guard !s.isEmpty else { return nil }
         while s.hasSuffix("/") { s.removeLast() }
         return URL(string: s)
+    }
+
+    private func inboxSenderPrimaryLabel(_ msg: RailwayInboxMessage) -> String {
+        if let n = msg.senderDisplayName {
+            let t = n.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { return t }
+        }
+        return msg.senderDeviceId
+    }
+
+    private func inboxSenderShowsDeviceId(_ msg: RailwayInboxMessage) -> Bool {
+        guard let n = msg.senderDisplayName else { return false }
+        return !n.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }

@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let bar = NSMenu()
 
         let appPullDown = NSMenuItem()
+        appPullDown.title = "StickerBubble"
         appPullDown.submenu = buildAppMenu()
         bar.addItem(appPullDown)
 
@@ -102,7 +103,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         bubbleController?.pasteStickerFromPasteboard()
     }
 
-    @objc private func openAccountAndSync() {
+    /// Also invoked from the bubble panel (menu bar is not always the focused app).
+    @objc func openAccountAndSync() {
         guard let bc = bubbleController else { return }
         if let w = syncHubWindow, w.isVisible {
             w.makeKeyAndOrderFront(nil)

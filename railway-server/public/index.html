@@ -127,7 +127,9 @@
         const li = document.createElement("li");
         const url = m.sticker_url ? `<div><a href="${escapeAttr(m.sticker_url)}" target="_blank" rel="noopener">sticker link</a></div>` : "";
         const body = m.body ? `<div>${escapeHtml(m.body)}</div>` : "";
-        li.innerHTML = `<div><span class="muted">from</span> <code>${escapeHtml(m.sender_device_id)}</code> <span class="muted">#${m.id}</span>${body}${url}</div>`;
+        const who = (m.sender_display_name && String(m.sender_display_name).trim()) ? escapeHtml(String(m.sender_display_name).trim()) : `<code>${escapeHtml(m.sender_device_id)}</code>`;
+        const idLine = (m.sender_display_name && String(m.sender_display_name).trim()) ? `<div class="muted"><code>${escapeHtml(m.sender_device_id)}</code></div>` : "";
+        li.innerHTML = `<div><span class="muted">from</span> ${who} <span class="muted">#${m.id}</span>${idLine}${body}${url}</div>`;
         ul.appendChild(li);
       }
     }
@@ -155,7 +157,7 @@
       const r = await fetch(`${apiBase()}/api/contacts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ owner_device_id: d, peer_device_id: peer, display_name: name || "Contact" }),
+        body: JSON.stringify({ owner_device_id: d, peer_device_id: peer, display_name: name || peer }),
       });
       if (!r.ok) { showErr(await r.text()); return; }
       document.getElementById("peerId").value = "";
