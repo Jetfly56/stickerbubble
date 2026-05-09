@@ -50,6 +50,9 @@ final class BubbleModel: ObservableObject {
 
     private var isAccessingSourceFolder = false
 
+    /// Set when a new message arrives from background polling; cleared after the banner is shown.
+    @Published var receivedFromName: String?
+
     var onStickerChanged: (() -> Void)?
     var onSendSuccess: (() -> Void)?
     /// Invoked when background inbox polling sees new message(s), after the initial “catch up” fetch (so launch / sign-in doesn’t pop the bubble).
@@ -759,6 +762,13 @@ final class BubbleModel: ObservableObject {
             }
             if let latest = newOnes.last {
                 applyInboxMessage(latest)
+                if !skipReveal {
+                    let senderLabel = latest.senderDisplayName.flatMap {
+                        let t = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                        return t.isEmpty ? nil : t
+                    } ?? latest.senderUserId
+                    receivedFromName = senderLabel
+                }
             }
             lastRailwayError = nil
         } catch {

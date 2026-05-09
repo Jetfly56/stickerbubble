@@ -329,6 +329,22 @@ struct ChatBubbleView: View {
             .padding(.trailing, 12)
             .padding(.bottom, 12)
         }
+        .overlay(alignment: .top) {
+            if let name = model.receivedFromName {
+                receivedBanner(name: name)
+                    .padding(.top, 10)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .onAppear {
+                        Task {
+                            try? await Task.sleep(nanoseconds: 3_000_000_000)
+                            withAnimation(.easeOut(duration: 0.3)) {
+                                model.receivedFromName = nil
+                            }
+                        }
+                    }
+            }
+        }
+        .animation(.spring(response: 0.35, dampingFraction: 0.75), value: model.receivedFromName != nil)
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .shadow(color: .black.opacity(0.18), radius: 18, y: 10)
     }
@@ -388,6 +404,53 @@ struct ChatBubbleView: View {
         let letters = parts.prefix(2).compactMap { $0.first }
         let s = String(letters).uppercased()
         return s.isEmpty ? "?" : s
+    }
+
+    private func receivedBanner(name: String) -> some View {
+        HStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(LinearGradient(
+                        colors: [.accentColor.opacity(0.9), .purple.opacity(0.8)],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    ))
+                Text(initials(from: name))
+                    .font(.system(.caption, design: .rounded, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 32, height: 32)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("From")
+                    .font(.system(.caption2, design: .rounded, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                    .tracking(0.3)
+                Text(name)
+                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+
+            Button {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    model.receivedFromName = nil
+                }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.secondary)
+                    .font(.system(size: 16))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: Capsule())
+        .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+        .padding(.horizontal, 16)
     }
 
     private var meChip: some View {
