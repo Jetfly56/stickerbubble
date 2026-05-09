@@ -29,6 +29,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         false
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        bubbleController?.show()
+        return true
+    }
+
     private func buildMainMenu() -> NSMenu {
         let bar = NSMenu()
 
