@@ -41,6 +41,7 @@ app: $(BINARY)
 </dict></plist>\n' > $(BUNDLE)/Contents/Info.plist
 
 zip: $(BUNDLE)
+	xattr -cr $(BUNDLE)
 	rm -f $(ZIP)
 	zip -r $(ZIP) $(BUNDLE)
 

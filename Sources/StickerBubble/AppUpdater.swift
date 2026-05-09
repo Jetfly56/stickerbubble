@@ -142,6 +142,7 @@ final class AppUpdater {
         sleep 1
         rm -rf '\(installPath)'
         cp -R '\(newAppPath)' '\(installPath)'
+        xattr -cr '\(installPath)'
         open '\(installPath)'
         rm -rf '\(cleanupPath)'
         """
