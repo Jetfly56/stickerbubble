@@ -1,12 +1,23 @@
 APP      = StickerBubble
-VERSION := $(shell grep 'currentVersion' Sources/StickerBubble/AppUpdater.swift | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
 BUNDLE   = $(APP).app
-ZIP      = $(APP)-$(VERSION).zip
 BINARY   = .build/release/$(APP)
+UPDATER  = Sources/StickerBubble/AppUpdater.swift
+
+# Read version from source; overridden by `make release VERSION=x.y.z`
+VERSION := $(shell grep 'currentVersion' $(UPDATER) | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+ZIP      = $(APP)-$(VERSION).zip
 
 .PHONY: release build app zip clean
 
-release: build app zip
+release:
+ifdef VERSION
+	@current=$$(grep 'currentVersion' $(UPDATER) | grep -oE '[0-9]+\.[0-9]+\.[0-9]+'); \
+	if [ "$$current" != "$(VERSION)" ]; then \
+		sed -i '' 's/static let currentVersion = "[^"]*"/static let currentVersion = "$(VERSION)"/' $(UPDATER); \
+		echo "Bumped version $$current → $(VERSION)"; \
+	fi
+endif
+	$(MAKE) build app zip
 	@echo "Ready: $(ZIP)"
 
 build:

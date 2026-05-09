@@ -3,7 +3,7 @@ import Foundation
 
 @MainActor
 final class AppUpdater {
-    static let currentVersion = "1.0.0"
+    static let currentVersion = "1.0.1"
 
     private static let apiURL = URL(
         string: "https://api.github.com/repos/Jetfly56/stickerbubble/releases/latest"
