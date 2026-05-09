@@ -58,7 +58,9 @@ struct ChatBubbleView: View {
                 isEmojiFieldFocused = true
             }
             Task {
-                await model.refreshRemoteContacts()
+                if model.isSignedIn {
+                    await model.refreshRemoteContacts()
+                }
             }
         }
     }
@@ -70,19 +72,23 @@ struct ChatBubbleView: View {
                 .foregroundStyle(.tertiary)
                 .textCase(.uppercase)
 
-            if model.remoteContacts.isEmpty {
+            if !model.isSignedIn {
+                Text("Sign in under Account & sync… to send stickers to your contacts’ user IDs.")
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundStyle(.secondary)
+            } else if model.remoteContacts.isEmpty {
                 Text(
                     model.railwayBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        ? "Tap Account & sync… below (or StickerBubble in the menu bar) to set your server URL and add contacts."
-                        : "No contacts yet — tap Account & sync… below or use the StickerBubble menu, then Refresh contacts."
+                        ? "Set your server URL in Account & sync…, then add contacts by their user ID."
+                        : "No contacts yet — open Account & sync… and add people by user ID, then Refresh contacts."
                 )
                 .font(.system(.caption, design: .rounded))
                 .foregroundStyle(.secondary)
             } else {
-                Picker("Server recipient", selection: $model.selectedPeerDeviceId) {
+                Picker("Server recipient", selection: $model.selectedPeerUserId) {
                     Text("— choose —").tag("")
                     ForEach(model.remoteContacts) { c in
-                        Text(c.displayName).tag(c.peerDeviceId)
+                        Text(c.displayName).tag(c.peerUserId)
                     }
                 }
                 .labelsHidden()
@@ -92,7 +98,7 @@ struct ChatBubbleView: View {
                 Button("Send (server)") {
                     Task { await model.sendCurrentStickerToRailway() }
                 }
-                .disabled(model.selectedPeerDeviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!model.isSignedIn || model.selectedPeerUserId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                 Button("Refresh contacts") {
                     Task { await model.refreshRemoteContacts() }

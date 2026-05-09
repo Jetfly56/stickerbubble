@@ -6,7 +6,10 @@ import Foundation
 final class BubbleModel: ObservableObject {
     private static let folderBookmarkKey = "StickerBubble.sourceFolderBookmark"
     private static let railwayURLKey = "StickerBubble.railwayBaseURL"
-    private static let railwayDeviceKey = "StickerBubble.railwayDeviceId"
+    private static let legacyDeviceKey = "StickerBubble.railwayDeviceId"
+    private static let installDeviceTokenKey = "StickerBubble.installDeviceToken"
+    private static let authTokenKey = "StickerBubble.authToken"
+    private static let signedInUserIdKey = "StickerBubble.signedInUserId"
     private static let localDisplayNameKey = "StickerBubble.localDisplayName"
 
     /// Who this draft preview is for (shown on the bubble — not sent anywhere).
@@ -26,32 +29,51 @@ final class BubbleModel: ObservableObject {
 
     var onStickerChanged: (() -> Void)?
 
-    // MARK: - Railway sync
+    // MARK: - Server account (user-id + password; multiple devices share one account)
 
     @Published var railwayBaseURL: String = UserDefaults.standard.string(forKey: BubbleModel.railwayURLKey) ?? ""
-    /// Stable account identity on the server (persisted).
-    @Published var deviceId: String
-    /// Shown in your UI and sent with each server message so recipients see who it is from.
+    /// JWT from last sign-in / register / recover.
+    @Published var authToken: String = UserDefaults.standard.string(forKey: BubbleModel.authTokenKey) ?? ""
+    /// Signed-in account handle (user-id).
+    @Published var signedInUserId: String = UserDefaults.standard.string(forKey: BubbleModel.signedInUserIdKey) ?? ""
+    /// Shown in UI and sent with messages; synced to server profile when signed in.
     @Published var localDisplayName: String = UserDefaults.standard.string(forKey: BubbleModel.localDisplayNameKey) ?? ""
+
     @Published var remoteContacts: [RailwayRemoteContact] = []
-    /// Latest inbox rows for triage UI (does not affect poll cursor).
     @Published var inboxTriageList: [RailwayInboxMessage] = []
-    /// `peer_device_id` to send server messages to; empty string = not set.
-    @Published var selectedPeerDeviceId: String = ""
+    /// Peer **user-id** (handle) to send to.
+    @Published var selectedPeerUserId: String = ""
     @Published var lastRailwayError: String?
     @Published private(set) var lastInboxMessageId: Int64 = 0
 
+    /// Opaque per-install token; same account can sign in on many Macs with different tokens.
+    let installDeviceToken: String
+
     private var pollTask: Task<Void, Never>?
 
+    var isSignedIn: Bool {
+        !authToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     init() {
-        if let existing = UserDefaults.standard.string(forKey: Self.railwayDeviceKey), !existing.isEmpty {
-            deviceId = existing
+        if let t = UserDefaults.standard.string(forKey: Self.installDeviceTokenKey),
+           !t.isEmpty,
+           Self.normalizedInstallToken(t) != nil
+        {
+            installDeviceToken = t
+        } else if let legacy = UserDefaults.standard.string(forKey: Self.legacyDeviceKey),
+                  !legacy.isEmpty,
+                  Self.normalizedInstallToken(legacy) != nil
+        {
+            installDeviceToken = legacy
+            UserDefaults.standard.set(legacy, forKey: Self.installDeviceTokenKey)
         } else {
             let fresh = UUID().uuidString
-            UserDefaults.standard.set(fresh, forKey: Self.railwayDeviceKey)
-            deviceId = fresh
+            UserDefaults.standard.set(fresh, forKey: Self.installDeviceTokenKey)
+            installDeviceToken = fresh
         }
         restoreSourceFolder()
+        startRailwayPollIfConfigured()
     }
 
     func setRailwayBaseURL(_ raw: String) {
@@ -61,12 +83,8 @@ final class BubbleModel: ObservableObject {
         startRailwayPollIfConfigured()
     }
 
-    func saveLocalDisplayName() {
-        UserDefaults.standard.set(localDisplayName, forKey: Self.localDisplayNameKey)
-    }
-
-    /// Letters, numbers, `.`, `_`, `-` only; length 2…64. Used for your device ID and recommended for peers.
-    static func normalizedDeviceId(_ raw: String) -> String? {
+    /// User-id / peer handle: letters, digits, `.`, `_`, `-`; length 2…64.
+    static func normalizedUserId(_ raw: String) -> String? {
         let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (2 ... 64).contains(t.count) else { return nil }
         let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
@@ -74,31 +92,182 @@ final class BubbleModel: ObservableObject {
         return t
     }
 
-    /// Persist a custom device ID. Returns `nil` on success, or a user-visible error string.
-    func applyDeviceId(_ raw: String) -> String? {
-        guard let normalized = Self.normalizedDeviceId(raw) else {
-            return "Device ID must be 2–64 characters: letters, numbers, period, underscore, or hyphen."
-        }
-        if normalized != deviceId {
-            UserDefaults.standard.set(normalized, forKey: Self.railwayDeviceKey)
-            deviceId = normalized
-            lastInboxMessageId = 0
-            inboxTriageList = []
-            remoteContacts = []
-            startRailwayPollIfConfigured()
-        }
-        return nil
+    /// Install device token (8…128 chars, same charset).
+    static func normalizedInstallToken(_ raw: String) -> String? {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (8 ... 128).contains(t.count) else { return nil }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+        guard t.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
+        return t
     }
 
-    /// New random device ID (breaks existing contact links — confirm in UI first).
-    func regenerateDeviceId() {
-        let fresh = UUID().uuidString
-        UserDefaults.standard.set(fresh, forKey: Self.railwayDeviceKey)
-        deviceId = fresh
-        lastInboxMessageId = 0
-        inboxTriageList = []
+    private func persistAuth(token: String, userId: String) {
+        authToken = token
+        signedInUserId = userId
+        UserDefaults.standard.set(token, forKey: Self.authTokenKey)
+        UserDefaults.standard.set(userId, forKey: Self.signedInUserIdKey)
+    }
+
+    func signOut() {
+        stopRailwayPoll()
+        authToken = ""
+        signedInUserId = ""
+        UserDefaults.standard.removeObject(forKey: Self.authTokenKey)
+        UserDefaults.standard.removeObject(forKey: Self.signedInUserIdKey)
         remoteContacts = []
-        startRailwayPollIfConfigured()
+        inboxTriageList = []
+        selectedPeerUserId = ""
+        lastInboxMessageId = 0
+        lastRailwayError = nil
+    }
+
+    func register(userId: String, password: String) async {
+        guard let base = normalizedRailwayBaseURL() else {
+            lastRailwayError = "Set server URL first."
+            return
+        }
+        guard let uid = Self.normalizedUserId(userId) else {
+            lastRailwayError = "User ID must be 2–64 characters: letters, numbers, period, underscore, or hyphen."
+            return
+        }
+        guard password.count >= 8 else {
+            lastRailwayError = "Password must be at least 8 characters."
+            return
+        }
+        do {
+            let res = try await RailwayClient.register(
+                baseURL: base,
+                userId: uid,
+                password: password,
+                displayName: localDisplayName.trimmingCharacters(in: .whitespacesAndNewlines),
+                deviceToken: installDeviceToken,
+                deviceLabel: ProcessInfo.processInfo.hostName
+            )
+            persistAuth(token: res.token, userId: res.account.userId)
+            if !res.account.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                localDisplayName = res.account.displayName
+                UserDefaults.standard.set(localDisplayName, forKey: Self.localDisplayNameKey)
+            }
+            lastInboxMessageId = 0
+            await refreshRemoteContacts()
+            await refreshInboxTriage()
+            lastRailwayError = nil
+            startRailwayPollIfConfigured()
+        } catch {
+            lastRailwayError = error.localizedDescription
+        }
+    }
+
+    func signIn(userId: String, password: String) async {
+        guard let base = normalizedRailwayBaseURL() else {
+            lastRailwayError = "Set server URL first."
+            return
+        }
+        guard let uid = Self.normalizedUserId(userId) else {
+            lastRailwayError = "Invalid user ID."
+            return
+        }
+        do {
+            let res = try await RailwayClient.login(
+                baseURL: base,
+                userId: uid,
+                password: password,
+                deviceToken: installDeviceToken,
+                deviceLabel: ProcessInfo.processInfo.hostName
+            )
+            persistAuth(token: res.token, userId: res.account.userId)
+            if !res.account.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                localDisplayName = res.account.displayName
+                UserDefaults.standard.set(localDisplayName, forKey: Self.localDisplayNameKey)
+            }
+            lastInboxMessageId = 0
+            await refreshRemoteContacts()
+            await refreshInboxTriage()
+            lastRailwayError = nil
+            startRailwayPollIfConfigured()
+        } catch {
+            lastRailwayError = error.localizedDescription
+        }
+    }
+
+    func recoverAccount(userId: String, code: String, newPassword: String) async {
+        guard let base = normalizedRailwayBaseURL() else {
+            lastRailwayError = "Set server URL first."
+            return
+        }
+        guard let uid = Self.normalizedUserId(userId) else {
+            lastRailwayError = "Invalid user ID."
+            return
+        }
+        guard newPassword.count >= 8 else {
+            lastRailwayError = "New password must be at least 8 characters."
+            return
+        }
+        do {
+            let res = try await RailwayClient.recover(
+                baseURL: base,
+                userId: uid,
+                code: code.trimmingCharacters(in: .whitespacesAndNewlines),
+                newPassword: newPassword,
+                deviceToken: installDeviceToken,
+                deviceLabel: ProcessInfo.processInfo.hostName
+            )
+            persistAuth(token: res.token, userId: res.account.userId)
+            lastInboxMessageId = 0
+            await refreshRemoteContacts()
+            await refreshInboxTriage()
+            lastRailwayError = nil
+            startRailwayPollIfConfigured()
+        } catch {
+            lastRailwayError = error.localizedDescription
+        }
+    }
+
+    func changePassword(oldPassword: String, newPassword: String) async {
+        guard let base = normalizedRailwayBaseURL(), !authToken.isEmpty else {
+            lastRailwayError = "Sign in first."
+            return
+        }
+        guard newPassword.count >= 8 else {
+            lastRailwayError = "New password must be at least 8 characters."
+            return
+        }
+        do {
+            try await RailwayClient.changePassword(baseURL: base, token: authToken, oldPassword: oldPassword, newPassword: newPassword)
+            lastRailwayError = nil
+        } catch {
+            lastRailwayError = error.localizedDescription
+        }
+    }
+
+    func createRecoveryCode() async throws -> (code: String, expiresAt: String) {
+        guard let base = normalizedRailwayBaseURL(), !authToken.isEmpty else {
+            throw RailwayClientError.serverMessage("Sign in first.")
+        }
+        return try await RailwayClient.createRecoveryCode(baseURL: base, token: authToken)
+    }
+
+    func saveLocalDisplayName() {
+        UserDefaults.standard.set(localDisplayName, forKey: Self.localDisplayNameKey)
+        Task {
+            await pushDisplayNameToServerIfPossible()
+        }
+    }
+
+    private func pushDisplayNameToServerIfPossible() async {
+        guard let base = normalizedRailwayBaseURL(), !authToken.isEmpty else { return }
+        do {
+            let acc = try await RailwayClient.patchDisplayName(
+                baseURL: base,
+                token: authToken,
+                displayName: localDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+            localDisplayName = acc.displayName
+            UserDefaults.standard.set(localDisplayName, forKey: Self.localDisplayNameKey)
+            lastRailwayError = nil
+        } catch {
+            lastRailwayError = error.localizedDescription
+        }
     }
 
     private var outboundSenderDisplayName: String? {
@@ -106,13 +275,22 @@ final class BubbleModel: ObservableObject {
         return s.isEmpty ? nil : s
     }
 
+    private func effectiveAuthToken() -> String? {
+        let t = authToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
+    }
+
     func refreshInboxTriage() async {
         guard let base = normalizedRailwayBaseURL() else {
             lastRailwayError = "Set server URL first."
             return
         }
+        guard let tok = effectiveAuthToken() else {
+            lastRailwayError = "Sign in to load inbox."
+            return
+        }
         do {
-            let rows = try await RailwayClient.fetchInbox(baseURL: base, deviceId: deviceId, afterId: 0)
+            let rows = try await RailwayClient.fetchInbox(baseURL: base, token: tok, afterId: 0)
             inboxTriageList = rows.sorted { $0.id > $1.id }.prefix(200).map { $0 }
             lastRailwayError = nil
         } catch {
@@ -120,19 +298,27 @@ final class BubbleModel: ObservableObject {
         }
     }
 
-    func addRemoteContact(displayName: String, peerDeviceId: String) async {
+    func addRemoteContact(displayName: String, peerUserId: String) async {
         guard let base = normalizedRailwayBaseURL() else {
             lastRailwayError = "Set server URL first."
             return
         }
-        let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let peer = peerDeviceId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !peer.isEmpty else {
-            lastRailwayError = "Peer device ID is required."
+        guard let tok = effectiveAuthToken() else {
+            lastRailwayError = "Sign in to manage contacts."
             return
         }
-        if Self.normalizedDeviceId(peer) == nil {
-            lastRailwayError = "Peer device ID must be 2–64 characters: letters, numbers, period, underscore, or hyphen."
+        let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let peer = peerUserId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !peer.isEmpty else {
+            lastRailwayError = "Peer user ID is required."
+            return
+        }
+        guard let peerNorm = Self.normalizedUserId(peer) else {
+            lastRailwayError = "Peer user ID must be 2–64 characters: letters, numbers, period, underscore, or hyphen."
+            return
+        }
+        if peerNorm == signedInUserId.trimmingCharacters(in: .whitespacesAndNewlines) {
+            lastRailwayError = "You cannot add yourself as a contact."
             return
         }
         if name.isEmpty {
@@ -140,21 +326,16 @@ final class BubbleModel: ObservableObject {
         }
         let resolvedName: String = {
             if !name.isEmpty { return name }
-            if let row = inboxTriageList.first(where: { $0.senderDeviceId == peer }),
+            if let row = inboxTriageList.first(where: { $0.senderUserId == peerNorm }),
                let inferred = row.senderDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines),
                !inferred.isEmpty
             {
                 return inferred
             }
-            return peer
+            return peerNorm
         }()
         do {
-            try await RailwayClient.upsertContact(
-                baseURL: base,
-                ownerDeviceId: deviceId,
-                peerDeviceId: peer,
-                displayName: resolvedName
-            )
+            try await RailwayClient.upsertContact(baseURL: base, token: tok, peerUserId: peerNorm, displayName: resolvedName)
             await refreshRemoteContacts()
             lastRailwayError = nil
         } catch {
@@ -163,9 +344,9 @@ final class BubbleModel: ObservableObject {
     }
 
     func deleteRemoteContact(id: Int) async {
-        guard let base = normalizedRailwayBaseURL() else { return }
+        guard let base = normalizedRailwayBaseURL(), let tok = effectiveAuthToken() else { return }
         do {
-            try await RailwayClient.deleteContact(baseURL: base, ownerDeviceId: deviceId, contactId: id)
+            try await RailwayClient.deleteContact(baseURL: base, token: tok, contactId: id)
             await refreshRemoteContacts()
             lastRailwayError = nil
         } catch {
@@ -173,14 +354,13 @@ final class BubbleModel: ObservableObject {
         }
     }
 
-    /// Loads a server inbox row into the floating bubble (same rules as live poll).
     func loadInboxMessageIntoBubble(_ msg: RailwayInboxMessage) {
         applyInboxMessage(msg)
     }
 
     func startRailwayPollIfConfigured() {
         stopRailwayPoll()
-        guard normalizedRailwayBaseURL() != nil else { return }
+        guard normalizedRailwayBaseURL() != nil, effectiveAuthToken() != nil else { return }
         pollTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
@@ -200,23 +380,30 @@ final class BubbleModel: ObservableObject {
             lastRailwayError = "Set server URL first (Account & sync… in the menu)."
             return
         }
+        guard let tok = effectiveAuthToken() else {
+            lastRailwayError = "Sign in to load contacts."
+            return
+        }
         do {
-            remoteContacts = try await RailwayClient.fetchContacts(baseURL: base, deviceId: deviceId)
+            remoteContacts = try await RailwayClient.fetchContacts(baseURL: base, token: tok)
             lastRailwayError = nil
         } catch {
             lastRailwayError = error.localizedDescription
         }
     }
 
-    /// Sends the current sticker (URL, text, or PNG of bitmap) to `selectedPeerDeviceId`.
     func sendCurrentStickerToRailway() async {
         guard let base = normalizedRailwayBaseURL() else {
             lastRailwayError = "Set server URL first."
             return
         }
-        let peer = selectedPeerDeviceId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let tok = effectiveAuthToken() else {
+            lastRailwayError = "Sign in to send."
+            return
+        }
+        let peer = selectedPeerUserId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !peer.isEmpty else {
-            lastRailwayError = "Pick a contact (peer device ID)."
+            lastRailwayError = "Pick a contact (their user ID)."
             return
         }
         guard let source = stickerSource else {
@@ -229,8 +416,8 @@ final class BubbleModel: ObservableObject {
             case .url(let u):
                 try await RailwayClient.postMessage(
                     baseURL: base,
-                    senderDeviceId: deviceId,
-                    recipientDeviceId: peer,
+                    token: tok,
+                    recipientUserId: peer,
                     stickerURL: u.absoluteString,
                     body: nil,
                     mediaBase64: nil,
@@ -240,8 +427,8 @@ final class BubbleModel: ObservableObject {
             case .text(let t):
                 try await RailwayClient.postMessage(
                     baseURL: base,
-                    senderDeviceId: deviceId,
-                    recipientDeviceId: peer,
+                    token: tok,
+                    recipientUserId: peer,
                     stickerURL: nil,
                     body: t,
                     mediaBase64: nil,
@@ -255,8 +442,8 @@ final class BubbleModel: ObservableObject {
                 }
                 try await RailwayClient.postMessage(
                     baseURL: base,
-                    senderDeviceId: deviceId,
-                    recipientDeviceId: peer,
+                    token: tok,
+                    recipientUserId: peer,
                     stickerURL: nil,
                     body: nil,
                     mediaBase64: data.base64EncodedString(),
@@ -271,9 +458,9 @@ final class BubbleModel: ObservableObject {
     }
 
     private func pollRailwayInboxOnce() async {
-        guard let base = normalizedRailwayBaseURL() else { return }
+        guard let base = normalizedRailwayBaseURL(), let tok = effectiveAuthToken() else { return }
         do {
-            let rows = try await RailwayClient.fetchInbox(baseURL: base, deviceId: deviceId, afterId: lastInboxMessageId)
+            let rows = try await RailwayClient.fetchInbox(baseURL: base, token: tok, afterId: lastInboxMessageId)
             guard let maxId = rows.map(\.id).max(), maxId > lastInboxMessageId else { return }
             let newOnes = rows.filter { $0.id > lastInboxMessageId }.sorted { $0.id < $1.id }
             lastInboxMessageId = maxId
@@ -290,7 +477,7 @@ final class BubbleModel: ObservableObject {
         let senderLabel = msg.senderDisplayName.flatMap { n in
             let t = n.trimmingCharacters(in: .whitespacesAndNewlines)
             return t.isEmpty ? nil : t
-        } ?? msg.senderDeviceId
+        } ?? msg.senderUserId
         recipientName = senderLabel
 
         if let s = msg.stickerUrl, !s.isEmpty {

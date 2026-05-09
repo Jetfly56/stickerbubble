@@ -1,34 +1,50 @@
 # StickerBubble Railway server
 
-Node + Express + Postgres. The Mac app (**StickerBubble**) polls `GET /api/messages/inbox` while running and includes **Account & sync…** for server URL, device ID, contacts, and inbox triage — no browser required. The `public/index.html` page is **optional** if you prefer triage in a tab.
+Node + Express + Postgres. The Mac app (**StickerBubble**) uses **user IDs** and **passwords**; each install gets a **device token** so one account can sign in on multiple Macs. JWT auth is required for contacts, send, and inbox.
 
 ## Deploy on Railway
 
-1. Create a **New Project** → **Deploy from GitHub** (or empty repo + push this `railway-server` folder as root or monorepo subpath).
-2. Add **PostgreSQL** to the **same project** (New → Database → Postgres).
-3. **Wire `DATABASE_URL` into the Node service** (this step is easy to miss — without it the app tries `localhost:5432` and crashes):
-   - Open your **API / web** service (the one running `node src/index.js`), not only the Postgres card.
-   - **Variables** → **+ New Variable** → **Variable Reference** (or “Reference” depending on UI).
-   - Select the **Postgres** service → variable **`DATABASE_URL`** → add.
-   - Redeploy (or wait for auto-deploy). You should **not** see `ECONNREFUSED 127.0.0.1:5432` once this is set.
-4. Set the **root directory** to `railway-server` if your repo contains the whole StickerBubble project.
-5. **Start command**: `npm start` (default).
-6. After deploy, copy the **public URL** into StickerBubble → **Account & sync…**. You can still open `/` in a browser if you want the web UI.
+1. Create a **New Project** → **Deploy from GitHub** (or push this `railway-server` folder).
+2. Add **PostgreSQL** to the **same project**.
+3. On the **Node** service → **Variables**:
+   - Reference **`DATABASE_URL`** from Postgres.
+   - Add **`JWT_SECRET`**: at least **32 characters** (e.g. run `openssl rand -base64 32` locally and paste). The server will not start without it.
+4. Set **root directory** to `railway-server` if the repo is the monorepo root.
+5. **Start command**: `npm start`.
+6. Copy the **public URL** into the Mac app → **Account & sync…**.
+
+The bundled `public/index.html` is optional; full sign-in and recovery are in the Mac app.
 
 ### Environment
 
-| Variable         | Required | Notes                          |
-|-----------------|----------|--------------------------------|
-| `DATABASE_URL`  | Yes      | Provided by Railway Postgres   |
-| `PORT`          | No       | Railway sets automatically     |
+| Variable         | Required | Notes                                      |
+|-----------------|----------|--------------------------------------------|
+| `DATABASE_URL`  | Yes      | From Railway Postgres                      |
+| `JWT_SECRET`      | Yes      | Min 32 chars; signs session tokens         |
+| `PORT`          | No       | Set by Railway                             |
 
-## API (used by Mac app and web UI)
+## Auth & recovery
 
-- `GET /api/contacts?device_id=` — list contacts for this device.
-- `POST /api/contacts` — body `{ owner_device_id, peer_device_id, display_name }`.
-- `DELETE /api/contacts/:id?device_id=` — remove if owned by device.
-- `POST /api/messages` — body `{ sender_device_id, recipient_device_id, sticker_url?, body?, media_base64?, media_content_type?, sender_display_name? }` (optional short name shown to the recipient).
-- `GET /api/messages/inbox?device_id=&after_id=` — poll new rows where `recipient_device_id` matches (includes `sender_display_name` when present).
+- **Register / login** with `user_id` + `password`. Each client sends a stable **`device_token`** (opaque string); the server binds many devices to one account.
+- **Forgot password**: there is **no email reset**. A user on a **signed-in** Mac generates a **recovery code** (`POST /api/auth/recovery-code` with Bearer token). On the other Mac, use **`POST /api/auth/recover`** with `user_id`, `code`, `new_password`, and this Mac’s `device_token`.
+- **Change password** (signed in): `POST /api/auth/change-password` with old and new password.
+
+## API summary (Bearer `Authorization` except register/login/recover)
+
+| Method | Path | Notes |
+|--------|------|--------|
+| POST | `/api/auth/register` | `user_id`, `password`, `device_token`, optional `display_name`, `device_label` |
+| POST | `/api/auth/login` | `user_id`, `password`, `device_token`, optional `device_label` |
+| POST | `/api/auth/change-password` | Bearer; `old_password`, `new_password` |
+| POST | `/api/auth/recovery-code` | Bearer; returns `{ code, expires_at }` once |
+| POST | `/api/auth/recover` | `user_id`, `code`, `new_password`, `device_token` |
+| GET | `/api/me` | Bearer; profile + devices |
+| PATCH | `/api/me` | Bearer; `{ display_name }` |
+| GET | `/api/contacts` | Bearer |
+| POST | `/api/contacts` | Bearer; `{ peer_user_id, display_name }` |
+| DELETE | `/api/contacts/:id` | Bearer |
+| POST | `/api/messages` | Bearer; `{ recipient_user_id, sticker_url?, body?, media_base64?, media_content_type?, sender_display_name? }` |
+| GET | `/api/messages/inbox?after_id=` | Bearer |
 
 ## Local run
 
@@ -36,7 +52,12 @@ Node + Express + Postgres. The Mac app (**StickerBubble**) polls `GET /api/messa
 cd railway-server
 npm install
 export DATABASE_URL="postgres://user:pass@localhost:5432/stickerbubble"
+export JWT_SECRET="$(openssl rand -base64 32)"
 npm start
 ```
 
 Open `http://localhost:3000`.
+
+### Database note
+
+v2 uses new tables prefixed with `sb_`. Older `contacts` / `messages` tables from v1 are no longer used by the API; you may drop them manually after migrating users.

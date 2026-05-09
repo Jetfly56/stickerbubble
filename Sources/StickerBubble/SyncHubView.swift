@@ -2,99 +2,86 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// In-app account, server URL, contacts, and inbox triage — no browser required.
+/// Server URL, sign-in / register, recovery (code from a signed-in device only), contacts, inbox.
 struct SyncHubView: View {
     @ObservedObject var model: BubbleModel
 
-    @State private var newContactName = ""
-    @State private var newPeerDeviceId = ""
     @State private var serverURLDraft = ""
-    @State private var deviceIdDraft = ""
-    @State private var deviceIdApplyError: String?
-    @State private var confirmRegenerateDevice = false
+    @State private var signInUserId = ""
+    @State private var signInPassword = ""
+
+    @State private var recoverUserId = ""
+    @State private var recoverCode = ""
+    @State private var recoverNewPassword = ""
+
+    @State private var changeOldPassword = ""
+    @State private var changeNewPassword = ""
+
+    @State private var newContactName = ""
+    @State private var newPeerUserId = ""
+
+    @State private var recoveryCodeShown: String?
+    @State private var recoveryExpires: String?
+    @State private var recoveryError: String?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text("Everything here syncs with your Railway server. The website is optional for triage in a browser.")
+                Text("Accounts use a user ID you share with friends. Each Mac has its own device token; sign in on every machine with the same user ID and password.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
-                accountSection
                 serverSection
-                contactsSection
-                inboxSection
+
+                if model.isSignedIn {
+                    signedInSection
+                } else {
+                    signInRegisterSection
+                    recoverySection
+                }
+
+                if model.isSignedIn {
+                    contactsSection
+                    inboxSection
+                }
+
                 optionalWebSection
+
+                if let err = model.lastRailwayError, !err.isEmpty {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(minWidth: 420, minHeight: 520)
+        .frame(minWidth: 440, minHeight: 560)
         .onAppear {
             serverURLDraft = model.railwayBaseURL
-            deviceIdDraft = model.deviceId
+            signInUserId = model.signedInUserId
             Task {
-                await model.refreshRemoteContacts()
-                await model.refreshInboxTriage()
-            }
-        }
-        .onReceive(model.$deviceId) { newId in
-            deviceIdDraft = newId
-        }
-    }
-
-    private var accountSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("Account")
-            Text("Pick a device ID you share with friends (or keep a random one). Your display name is sent with each sticker so they see who it is from.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            TextField("Display name (sent with messages)", text: $model.localDisplayName)
-                .textFieldStyle(.roundedBorder)
-            Button("Save display name") {
-                model.saveLocalDisplayName()
-            }
-
-            TextField("Your device ID (2–64: letters, numbers, . _ -)", text: $deviceIdDraft)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-
-            if let err = deviceIdApplyError, !err.isEmpty {
-                Text(err)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-
-            HStack(spacing: 10) {
-                Button("Save device ID") {
-                    deviceIdApplyError = model.applyDeviceId(deviceIdDraft)
-                    if deviceIdApplyError == nil {
-                        deviceIdDraft = model.deviceId
-                        Task {
-                            await model.refreshRemoteContacts()
-                            await model.refreshInboxTriage()
-                        }
-                    }
+                if model.isSignedIn {
+                    await model.refreshRemoteContacts()
+                    await model.refreshInboxTriage()
                 }
-                Button("Copy device ID") {
+            }
+        }
+        .alert("Recovery code", isPresented: Binding(
+            get: { recoveryCodeShown != nil },
+            set: { if !$0 { recoveryCodeShown = nil; recoveryExpires = nil } }
+        )) {
+            Button("Copy code") {
+                if let c = recoveryCodeShown {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(model.deviceId, forType: .string)
-                }
-                Button("New random ID…", role: .destructive) {
-                    confirmRegenerateDevice = true
+                    NSPasteboard.general.setString(c, forType: .string)
                 }
             }
-        }
-        .alert("Replace device ID?", isPresented: $confirmRegenerateDevice) {
-            Button("Cancel", role: .cancel) {}
-            Button("Generate", role: .destructive) {
-                model.regenerateDeviceId()
-                deviceIdDraft = model.deviceId
-                deviceIdApplyError = nil
-            }
+            Button("OK", role: .cancel) {}
         } message: {
-            Text("You will get a new random ID. Old messages won’t find you; tell contacts your new ID.")
+            if let c = recoveryCodeShown, let e = recoveryExpires {
+                Text("Give this code to your other Mac (or keep it private). It expires around \(e).\n\n\(c)")
+            }
         }
     }
 
@@ -106,8 +93,150 @@ struct SyncHubView: View {
             Button("Save & connect") {
                 model.setRailwayBaseURL(serverURLDraft)
                 Task {
-                    await model.refreshRemoteContacts()
-                    await model.refreshInboxTriage()
+                    if model.isSignedIn {
+                        await model.refreshRemoteContacts()
+                        await model.refreshInboxTriage()
+                    }
+                }
+            }
+        }
+    }
+
+    private var signInRegisterSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionTitle("Sign in or create account")
+            Text("Server needs JWT_SECRET set (32+ random chars). Add it in Railway variables if deploy fails.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+
+            TextField("User ID", text: $signInUserId)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.body, design: .monospaced))
+
+            SecureField("Password (8+ characters)", text: $signInPassword)
+                .textFieldStyle(.roundedBorder)
+
+            HStack(spacing: 10) {
+                Button("Sign in") {
+                    Task {
+                        await model.signIn(userId: signInUserId, password: signInPassword)
+                        if model.isSignedIn { signInPassword = "" }
+                    }
+                }
+                .disabled(signInUserId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || signInPassword.count < 8)
+            }
+
+            Divider().padding(.vertical, 4)
+
+            Text("New here? Use the same fields above, then create your account.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            TextField("Display name (optional, profile + sent with stickers)", text: $model.localDisplayName)
+                .textFieldStyle(.roundedBorder)
+
+            Button("Create account") {
+                Task {
+                    await model.register(userId: signInUserId, password: signInPassword)
+                    if model.isSignedIn {
+                        signInPassword = ""
+                    }
+                }
+            }
+            .disabled(signInUserId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || signInPassword.count < 8)
+        }
+    }
+
+    private var recoverySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("Forgot password on this Mac?")
+            Text(
+                "Password reset is not done by email. On a Mac where you are already signed in, open Account & sync and tap Generate recovery code, then enter that code here with a new password."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            TextField("Your user ID", text: $recoverUserId)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.body, design: .monospaced))
+            TextField("Recovery code", text: $recoverCode)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.body, design: .monospaced))
+            SecureField("New password (8+)", text: $recoverNewPassword)
+                .textFieldStyle(.roundedBorder)
+
+            Button("Complete recovery & sign in on this Mac") {
+                Task {
+                    await model.recoverAccount(userId: recoverUserId, code: recoverCode, newPassword: recoverNewPassword)
+                    if model.isSignedIn {
+                        recoverCode = ""
+                        recoverNewPassword = ""
+                    }
+                }
+            }
+            .disabled(
+                recoverUserId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || recoverCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || recoverNewPassword.count < 8
+            )
+        }
+    }
+
+    private var signedInSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionTitle("Signed in")
+            LabeledContent("User ID") {
+                Text(model.signedInUserId)
+                    .font(.system(.body, design: .monospaced))
+                    .textSelection(.enabled)
+            }
+            Button("Sign out on this Mac") {
+                model.signOut()
+            }
+
+            TextField("Display name (profile + sent with stickers)", text: $model.localDisplayName)
+                .textFieldStyle(.roundedBorder)
+            Button("Save display name") {
+                model.saveLocalDisplayName()
+            }
+
+            Divider()
+
+            sectionTitle("Change password")
+            SecureField("Current password", text: $changeOldPassword)
+                .textFieldStyle(.roundedBorder)
+            SecureField("New password (8+)", text: $changeNewPassword)
+                .textFieldStyle(.roundedBorder)
+            Button("Update password") {
+                Task {
+                    await model.changePassword(oldPassword: changeOldPassword, newPassword: changeNewPassword)
+                    if model.lastRailwayError == nil {
+                        changeOldPassword = ""
+                        changeNewPassword = ""
+                    }
+                }
+            }
+            .disabled(changeOldPassword.isEmpty || changeNewPassword.count < 8)
+
+            Divider()
+
+            sectionTitle("Recovery for another device")
+            Text("Generate a one-time code (valid ~20 minutes). Use it on the other Mac in the section above. Anyone with the code can set a new password for your account—treat it like a secret.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let recoveryError, !recoveryError.isEmpty {
+                Text(recoveryError).font(.caption).foregroundStyle(.red)
+            }
+            Button("Generate recovery code") {
+                Task {
+                    recoveryError = nil
+                    do {
+                        let pair = try await model.createRecoveryCode()
+                        recoveryCodeShown = pair.code
+                        recoveryExpires = pair.expiresAt
+                    } catch {
+                        recoveryError = error.localizedDescription
+                    }
                 }
             }
         }
@@ -116,24 +245,24 @@ struct SyncHubView: View {
     private var contactsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Contacts")
-            Text("Leave name empty to use the display name from their latest message to you, if any; otherwise their device ID is used as the label.")
+            Text("Add people by their user ID. Leave name empty to infer from their latest message display name, or use their user ID as the label.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
             HStack(alignment: .top, spacing: 10) {
                 TextField("Name (optional)", text: $newContactName)
                     .textFieldStyle(.roundedBorder)
-                TextField("Their device ID", text: $newPeerDeviceId)
+                TextField("Their user ID", text: $newPeerUserId)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
             }
             Button("Add contact") {
                 Task {
-                    await model.addRemoteContact(displayName: newContactName, peerDeviceId: newPeerDeviceId)
+                    await model.addRemoteContact(displayName: newContactName, peerUserId: newPeerUserId)
                     newContactName = ""
-                    newPeerDeviceId = ""
+                    newPeerUserId = ""
                 }
             }
-            .disabled(newPeerDeviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(newPeerUserId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
             if model.remoteContacts.isEmpty {
                 Text("No contacts yet.")
@@ -144,7 +273,7 @@ struct SyncHubView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(c.displayName).font(.headline)
-                            Text(c.peerDeviceId).font(.caption).monospaced().foregroundStyle(.secondary)
+                            Text(c.peerUserId).font(.caption).monospaced().foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button("Remove", role: .destructive) {
@@ -161,10 +290,8 @@ struct SyncHubView: View {
     private var inboxSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Inbox")
-            HStack {
-                Button("Refresh inbox") {
-                    Task { await model.refreshInboxTriage() }
-                }
+            Button("Refresh inbox") {
+                Task { await model.refreshInboxTriage() }
             }
             if model.inboxTriageList.isEmpty {
                 Text("No messages yet.")
@@ -184,8 +311,8 @@ struct SyncHubView: View {
                                     .font(.caption)
                                     .lineLimit(1)
                                     .truncationMode(.tail)
-                                if inboxSenderShowsDeviceId(msg) {
-                                    Text(msg.senderDeviceId)
+                                if inboxSenderShowsUserId(msg) {
+                                    Text(msg.senderUserId)
                                         .font(.caption2)
                                         .monospaced()
                                         .foregroundStyle(.tertiary)
@@ -217,7 +344,7 @@ struct SyncHubView: View {
     private var optionalWebSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("Optional browser")
-            Text("Open the same server in Safari or Chrome if you prefer a tab for bulk triage.")
+            Text("The bundled web page is minimal; the Mac app is the full account experience.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Button("Open server in browser") {
@@ -245,10 +372,10 @@ struct SyncHubView: View {
             let t = n.trimmingCharacters(in: .whitespacesAndNewlines)
             if !t.isEmpty { return t }
         }
-        return msg.senderDeviceId
+        return msg.senderUserId
     }
 
-    private func inboxSenderShowsDeviceId(_ msg: RailwayInboxMessage) -> Bool {
+    private func inboxSenderShowsUserId(_ msg: RailwayInboxMessage) -> Bool {
         guard let n = msg.senderDisplayName else { return false }
         return !n.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
