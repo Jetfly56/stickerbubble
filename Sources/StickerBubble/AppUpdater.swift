@@ -3,7 +3,7 @@ import Foundation
 
 @MainActor
 final class AppUpdater {
-    static let currentVersion = "1.0.2"
+    static let currentVersion = "1.0.4"
 
     private static let apiURL = URL(
         string: "https://api.github.com/repos/Jetfly56/stickerbubble/releases/latest"
@@ -44,7 +44,10 @@ final class AppUpdater {
         var req = URLRequest(url: Self.apiURL)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            throw UpdateError.noReleasesFound
+        }
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(Release.self, from: data)
@@ -193,11 +196,13 @@ final class AppUpdater {
     }
 
     enum UpdateError: LocalizedError {
+        case noReleasesFound
         case extractFailed
         case noAppFound
 
         var errorDescription: String? {
             switch self {
+            case .noReleasesFound: "No releases have been published yet."
             case .extractFailed: "Failed to extract the update archive."
             case .noAppFound: "No .app bundle found in the update archive."
             }
