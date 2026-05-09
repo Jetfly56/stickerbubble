@@ -318,14 +318,9 @@ struct ChatBubbleView: View {
                     .accessibilityLabel("Send")
                 }
 
-                recipientSection
-                    .frame(maxWidth: 300, alignment: .leading)
-                    .padding(12)
-                    .background {
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(.regularMaterial.opacity(0.92))
-                            .shadow(color: .black.opacity(0.06), radius: 6, y: 2)
-                    }
+                Text("Preview only — not delivered.")
+                    .font(.system(.caption2, design: .rounded))
+                    .foregroundStyle(.tertiary)
             }
             .padding(.leading, 12)
             .padding(.trailing, 12)
@@ -335,48 +330,6 @@ struct ChatBubbleView: View {
         .shadow(color: .black.opacity(0.18), radius: 18, y: 10)
     }
 
-    /// Draft recipient chip inside sticker frame (below Send to + compose).
-    private var recipientSection: some View {
-        HStack(alignment: .top, spacing: 10) {
-            ZStack {
-                Circle()
-                    .fill(LinearGradient(colors: [.accentColor.opacity(0.85), .purple.opacity(0.75)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                Text(initials(from: model.recipientName))
-                    .font(.system(.caption, design: .rounded, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 36, height: 36)
-            .accessibilityLabel("Recipient initials")
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Recipient")
-                    .font(.system(.caption2, design: .rounded, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .textCase(.uppercase)
-                    .tracking(0.35)
-
-                TextField("Name", text: Binding(
-                    get: { model.recipientName },
-                    set: { model.recipientName = $0 }
-                ))
-                .textFieldStyle(.plain)
-                .font(.system(.subheadline, design: .rounded, weight: .semibold))
-
-                TextField("Optional note", text: Binding(
-                    get: { model.recipientDetail },
-                    set: { model.recipientDetail = $0 }
-                ))
-                .textFieldStyle(.plain)
-                .font(.system(.caption, design: .rounded))
-                .foregroundStyle(.secondary)
-
-                Text("Preview only — not delivered.")
-                    .font(.system(.caption2, design: .rounded))
-                    .foregroundStyle(.tertiary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
     private var emptyDropZone: some View {
         VStack(spacing: 10) {
             Image(systemName: "square.and.arrow.down")
