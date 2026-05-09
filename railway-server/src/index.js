@@ -645,7 +645,6 @@ app.post("/api/messages", authMiddleware, async (req, res) => {
   const { recipient_user_id, sticker_url, body, media_base64, media_content_type, sender_display_name } = req.body || {};
   const recipHandle = normalizeUserId(recipient_user_id);
   if (!recipHandle) return res.status(400).json({ error: "invalid_recipient_user_id" });
-  if (recipHandle === req.userId) return res.status(400).json({ error: "cannot_message_self" });
 
   let senderLabel =
     sender_display_name != null && String(sender_display_name).trim() !== ""
