@@ -8,7 +8,9 @@ const path = require("path");
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const { Pool } = require("pg");
+const { Pool, types } = require("pg");
+// pg returns BIGINT/BIGSERIAL columns as strings by default; parse them as numbers.
+types.setTypeParser(20, (val) => parseInt(val, 10));
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
