@@ -31,15 +31,14 @@ struct WebStickerBrowseSheet: View {
                             WebStickerClient.saveGiphyAPIKey(state.apiKeyDraft)
                         }
                     }
-                    if state.provider == .giphySearch {
-                        TextField("Search Giphy…", text: $state.searchQuery)
-                            .textFieldStyle(.roundedBorder)
-                            .onSubmit { state.refresh() }
-                    }
                     Text("Free dashboard key: developers.giphy.com/dashboard/")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                TextField(state.provider.searchPlaceholder, text: $state.searchQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { state.refresh() }
 
                 if let status = state.status {
                     Text(status)
@@ -76,6 +75,12 @@ struct WebStickerBrowseSheet: View {
 
                     if state.provider.isGiphy {
                         Link("Powered by Giphy — API terms apply", destination: URL(string: "https://developers.giphy.com/explainer/")!)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    if state.provider.isKlipy {
+                        Link("Powered by Klipy — API terms apply", destination: URL(string: "https://klipy.com/terms")!)
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }

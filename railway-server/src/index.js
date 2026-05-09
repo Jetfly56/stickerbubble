@@ -26,6 +26,7 @@ if (JWT_SECRET.length < 32) {
   process.exit(1);
 }
 
+app.set("trust proxy", true);
 app.use(cors());
 app.use(express.json({ limit: "12mb" }));
 app.use(express.static(path.join(__dirname, "..", "public")));
@@ -740,6 +741,70 @@ app.delete("/api/messages", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "db_error" });
   }
 });
+
+// --- Klipy proxy ---
+//
+// Holds the Klipy key server-side so the Mac app doesn't ship one. Per-IP
+// token bucket caps abuse; if you outgrow this, swap to per-account limits
+// behind authMiddleware. Klipy embeds the key in the URL path:
+//   https://api.klipy.com/api/v1/{KEY}/gifs/{trending|search}
+const KLIPY_API_KEY = process.env.KLIPY_API_KEY ? String(process.env.KLIPY_API_KEY).trim() : "";
+const KLIPY_RATE_WINDOW_MS = 60_000;
+const KLIPY_RATE_LIMIT = 60;
+const klipyBuckets = new Map();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, b] of klipyBuckets) {
+    if (b.resetAt <= now) klipyBuckets.delete(ip);
+  }
+}, 5 * 60_000).unref();
+
+function klipyRateLimit(req, res, next) {
+  const ip = req.ip || req.socket?.remoteAddress || "unknown";
+  const now = Date.now();
+  let bucket = klipyBuckets.get(ip);
+  if (!bucket || bucket.resetAt <= now) {
+    bucket = { count: 0, resetAt: now + KLIPY_RATE_WINDOW_MS };
+    klipyBuckets.set(ip, bucket);
+  }
+  bucket.count += 1;
+  if (bucket.count > KLIPY_RATE_LIMIT) {
+    const retry = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+    res.set("Retry-After", String(retry));
+    return res.status(429).json({ error: "rate_limited", retry_after: retry });
+  }
+  next();
+}
+
+async function proxyKlipy(req, res, path) {
+  if (!KLIPY_API_KEY) return res.status(503).json({ error: "klipy_not_configured" });
+
+  const perPage = Math.min(50, Math.max(1, Number(req.query.per_page) || 30));
+  const params = new URLSearchParams({ per_page: String(perPage) });
+  if (path === "search") {
+    const q = (req.query.q || "").toString().trim().slice(0, 200);
+    if (!q) return res.status(400).json({ error: "missing_query" });
+    params.set("q", q);
+  }
+
+  try {
+    const upstream = await fetch(
+      `https://api.klipy.com/api/v1/${encodeURIComponent(KLIPY_API_KEY)}/gifs/${path}?${params.toString()}`
+    );
+    const text = await upstream.text();
+    res.status(upstream.status);
+    const ct = upstream.headers.get("content-type");
+    if (ct) res.set("Content-Type", ct);
+    res.send(text);
+  } catch (e) {
+    console.error("klipy proxy error:", e);
+    res.status(502).json({ error: "klipy_upstream_error" });
+  }
+}
+
+app.get("/api/klipy/trending", klipyRateLimit, (req, res) => proxyKlipy(req, res, "trending"));
+app.get("/api/klipy/search", klipyRateLimit, (req, res) => proxyKlipy(req, res, "search"));
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });

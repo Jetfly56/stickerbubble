@@ -4,22 +4,32 @@ enum WebStickerProvider: String, CaseIterable, Identifiable {
     case redditGifs = "Reddit · r/gifs"
     case redditMemes = "Reddit · r/memes"
     case redditReaction = "Reddit · r/reactiongifs"
-    case giphyTrending = "Giphy · Trending"
-    case giphySearch = "Giphy · Search"
+    case giphy = "Giphy"
+    case klipy = "Klipy"
 
     var id: String { rawValue }
 
-    var isReddit: Bool {
+    var isReddit: Bool { subreddit != nil }
+
+    var isGiphy: Bool { self == .giphy }
+
+    var isKlipy: Bool { self == .klipy }
+
+    var subreddit: String? {
         switch self {
-        case .redditGifs, .redditMemes, .redditReaction: return true
-        default: return false
+        case .redditGifs: return "gifs"
+        case .redditMemes: return "memes"
+        case .redditReaction: return "reactiongifs"
+        case .giphy, .klipy: return nil
         }
     }
 
-    var isGiphy: Bool {
+    /// Placeholder shown in the search field when this source is selected.
+    var searchPlaceholder: String {
         switch self {
-        case .giphyTrending, .giphySearch: return true
-        default: return false
+        case .giphy: return "Search Giphy (empty for trending)"
+        case .klipy: return "Search Klipy (empty for trending)"
+        default: return "Search \(rawValue) (empty for hot)"
         }
     }
 }
@@ -44,7 +54,7 @@ enum WebStickerFetchError: LocalizedError {
         case .badResponse(let code): return "Server returned \(code)."
         case .decode: return "Could not parse the response."
         case .noGIFKey: return "Add a Giphy API key (free at developers.giphy.com) below."
-        case .emptyQuery: return "Enter a search term for Giphy search."
+        case .emptyQuery: return "Enter a search term."
         case .invalidURL: return "Bad URL."
         }
     }
