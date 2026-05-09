@@ -715,6 +715,32 @@ app.get("/api/messages/inbox", authMiddleware, async (req, res) => {
   }
 });
 
+app.delete("/api/messages/:id", authMiddleware, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: "invalid_id" });
+  try {
+    const r = await pool.query(
+      `DELETE FROM sb_messages WHERE id = $1 AND recipient_account_id = $2 RETURNING id`,
+      [id, req.accountId]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: "not_found" });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "db_error" });
+  }
+});
+
+app.delete("/api/messages", authMiddleware, async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM sb_messages WHERE recipient_account_id = $1`, [req.accountId]);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "db_error" });
+  }
+});
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });

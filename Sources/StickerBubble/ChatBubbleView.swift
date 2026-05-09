@@ -12,6 +12,7 @@ struct ChatBubbleView: View {
     @State private var isSettingsHovered = false
     @State private var isMuteHovered = false
     @State private var showEmojiPicker = false
+    @State private var showInboxModal = false
     @State private var isChoosingFolder = false
     @State private var showGridPicker = false
     @State private var showWebStickerSheet = false
@@ -72,6 +73,9 @@ struct ChatBubbleView: View {
             }
             .sheet(isPresented: $showContactPickModal) {
                 ContactPickModalView(model: model)
+            }
+            .sheet(isPresented: $showInboxModal) {
+                InboxTriageModalView(model: model)
             }
             .onAppear {
                 DispatchQueue.main.async {
@@ -338,6 +342,26 @@ struct ChatBubbleView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Copy sticker to clipboard")
+                }
+
+                if model.isSignedIn {
+                    Button {
+                        showInboxModal = true
+                    } label: {
+                        ZStack(alignment: .topTrailing) {
+                            Image(systemName: "tray.full")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                            if !model.inboxTriageList.isEmpty {
+                                Circle()
+                                    .fill(Color.red.opacity(0.95))
+                                    .frame(width: 6, height: 6)
+                                    .offset(x: 4, y: -2)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help("Inbox triage — review and clear messages")
                 }
             }
             .padding(.trailing, 10)
@@ -904,5 +928,229 @@ private struct StickerThumbnail: View {
                 Color.gray.opacity(0.2)
             }
         }
+    }
+}
+
+// MARK: - Inbox triage modal
+
+struct InboxTriageModalView: View {
+    @ObservedObject var model: BubbleModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var isRefreshing = false
+    @State private var showClearConfirm = false
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                Group {
+                    if model.inboxTriageList.isEmpty {
+                        VStack(spacing: 14) {
+                            Image(systemName: "tray")
+                                .font(.system(size: 44, weight: .light))
+                                .foregroundStyle(.secondary)
+                            Text("Inbox is empty")
+                                .font(.headline)
+                            if isRefreshing {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Text("New messages will show up here.")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        List {
+                            ForEach(model.inboxTriageList, id: \.id) { msg in
+                                InboxTriageRow(model: model, msg: msg) {
+                                    model.loadInboxMessageIntoBubble(msg)
+                                    dismiss()
+                                }
+                            }
+                            .onDelete(perform: deleteAt)
+                        }
+                    }
+                }
+
+                Divider()
+
+                HStack(spacing: 10) {
+                    Button {
+                        Task {
+                            isRefreshing = true
+                            await model.refreshInboxTriage()
+                            isRefreshing = false
+                        }
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(isRefreshing)
+
+                    Spacer()
+
+                    if let err = model.lastRailwayError, !err.isEmpty {
+                        Text(err)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .lineLimit(1)
+                    }
+
+                    Button(role: .destructive) {
+                        showClearConfirm = true
+                    } label: {
+                        Label("Clear all", systemImage: "trash")
+                    }
+                    .disabled(model.inboxTriageList.isEmpty)
+                }
+                .padding(12)
+            }
+            .navigationTitle("Inbox")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .confirmationDialog(
+                "Delete every message in your inbox?",
+                isPresented: $showClearConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Clear inbox", role: .destructive) {
+                    Task { await model.clearInbox() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This permanently removes them from the server for this account.")
+            }
+            .task {
+                if model.inboxTriageList.isEmpty {
+                    isRefreshing = true
+                    await model.refreshInboxTriage()
+                    isRefreshing = false
+                }
+            }
+        }
+        .frame(minWidth: 460, minHeight: 480)
+    }
+
+    private func deleteAt(_ offsets: IndexSet) {
+        let targets = offsets.map { model.inboxTriageList[$0] }
+        Task {
+            for msg in targets {
+                await model.deleteInboxMessage(msg)
+            }
+        }
+    }
+}
+
+private struct InboxTriageRow: View {
+    @ObservedObject var model: BubbleModel
+    let msg: RailwayInboxMessage
+    let onView: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            preview
+                .frame(width: 56, height: 56)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                }
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(senderLabel)
+                        .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                        .lineLimit(1)
+                    Text(msg.senderUserId)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                if let body = msg.body, !body.isEmpty {
+                    Text(body)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(spacing: 6) {
+                Button {
+                    onView()
+                } label: {
+                    Image(systemName: "eye")
+                }
+                .buttonStyle(.borderless)
+                .help("Open in bubble")
+
+                Button(role: .destructive) {
+                    Task { await model.deleteInboxMessage(msg) }
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help("Delete")
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var senderLabel: String {
+        let name = msg.senderDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? msg.senderUserId : name
+    }
+
+    @ViewBuilder
+    private var preview: some View {
+        if let s = msg.stickerUrl, !s.isEmpty {
+            if s.hasPrefix("data:") {
+                if let img = inboxImage(fromDataURL: s) {
+                    Image(nsImage: img).resizable().scaledToFill()
+                } else {
+                    placeholder("photo")
+                }
+            } else if let url = URL(string: s) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .empty: placeholder("photo")
+                    case .success(let image): image.resizable().scaledToFill()
+                    case .failure: placeholder("link")
+                    @unknown default: placeholder("photo")
+                    }
+                }
+            } else {
+                placeholder("link")
+            }
+        } else if let body = msg.body, !body.isEmpty {
+            ZStack {
+                Color.accentColor.opacity(0.18)
+                Text(String(body.prefix(2)))
+                    .font(.system(.title3, design: .rounded, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+            }
+        } else {
+            placeholder("envelope")
+        }
+    }
+
+    private func placeholder(_ symbol: String) -> some View {
+        ZStack {
+            Color.gray.opacity(0.18)
+            Image(systemName: symbol)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func inboxImage(fromDataURL raw: String) -> NSImage? {
+        guard let comma = raw.firstIndex(of: ",") else { return nil }
+        let encoded = String(raw[raw.index(after: comma)...])
+        guard let data = Data(base64Encoded: encoded) else { return nil }
+        return NSImage(data: data)
     }
 }

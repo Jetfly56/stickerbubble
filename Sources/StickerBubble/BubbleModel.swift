@@ -747,6 +747,28 @@ final class BubbleModel: ObservableObject {
         applyInboxMessage(msg)
     }
 
+    func deleteInboxMessage(_ msg: RailwayInboxMessage) async {
+        guard let base = normalizedRailwayBaseURL(), let tok = effectiveAuthToken() else { return }
+        do {
+            try await RailwayClient.deleteInboxMessage(baseURL: base, token: tok, messageId: msg.id)
+            inboxTriageList.removeAll { $0.id == msg.id }
+            lastRailwayError = nil
+        } catch {
+            lastRailwayError = error.localizedDescription
+        }
+    }
+
+    func clearInbox() async {
+        guard let base = normalizedRailwayBaseURL(), let tok = effectiveAuthToken() else { return }
+        do {
+            try await RailwayClient.clearInbox(baseURL: base, token: tok)
+            inboxTriageList = []
+            lastRailwayError = nil
+        } catch {
+            lastRailwayError = error.localizedDescription
+        }
+    }
+
     func startRailwayPollIfConfigured() {
         stopRailwayPoll()
         isInboxPollWarmup = true

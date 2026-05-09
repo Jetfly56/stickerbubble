@@ -482,4 +482,28 @@ enum RailwayClient {
             throw RailwayClientError.serverMessage(serverErrorMessage(data: data, status: http.statusCode) ?? "HTTP \(http.statusCode)")
         }
     }
+
+    static func deleteInboxMessage(baseURL: String, token: String, messageId: Int64) async throws {
+        let url = try joinURL(base: baseURL, path: "/api/messages/\(messageId)")
+        var req = URLRequest(url: url)
+        req.httpMethod = "DELETE"
+        applyAuth(&req, token: token)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else { throw RailwayClientError.httpStatus(-1) }
+        guard (200 ... 299).contains(http.statusCode) else {
+            throw RailwayClientError.serverMessage(serverErrorMessage(data: data, status: http.statusCode) ?? "HTTP \(http.statusCode)")
+        }
+    }
+
+    static func clearInbox(baseURL: String, token: String) async throws {
+        let url = try joinURL(base: baseURL, path: "/api/messages")
+        var req = URLRequest(url: url)
+        req.httpMethod = "DELETE"
+        applyAuth(&req, token: token)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else { throw RailwayClientError.httpStatus(-1) }
+        guard (200 ... 299).contains(http.statusCode) else {
+            throw RailwayClientError.serverMessage(serverErrorMessage(data: data, status: http.statusCode) ?? "HTTP \(http.statusCode)")
+        }
+    }
 }
