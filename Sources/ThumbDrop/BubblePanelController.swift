@@ -87,8 +87,11 @@ final class BubblePanelController: NSObject {
             }
             .store(in: &cancellables)
 
-        model.onSendSuccess = { [weak self] in
+        model.onSendInitiated = { [weak self] in
             self?.hide()
+        }
+        model.onSendFailed = { [weak self] in
+            self?.show()
         }
         model.onNewInboxFromBackgroundPoll = { [weak self] in
             self?.show()
@@ -161,7 +164,7 @@ final class BubblePanelController: NSObject {
     }
 
     func teardown() {
-        model.stopRailwayPoll()
+        model.stopMatrixPoll()
         if let keyDownMonitor {
             NSEvent.removeMonitor(keyDownMonitor)
             self.keyDownMonitor = nil
@@ -333,15 +336,46 @@ final class BubblePanelController: NSObject {
     }
 
     /// Walks the hit view chain; skips window drag when the user is on a text field, button, or other control.
-    /// `NSImageView` subclasses `NSControl` on macOS — it must be allowed **before** the `NSControl` check or sticker drags never start.
     private func shouldAllowWindowDrag(from view: NSView?) -> Bool {
         var current: NSView? = view
         while let v = current {
             if v is NSTextView { return false }
-            if v is NSImageView { return true }
+            // The sticker canvas owns its own pan/zoom interaction. When it's active
+            // (image is pannable or in edit mode) we deny window drag so the canvas's
+            // mouse handlers run cleanly. When inactive (small image, fit-mode) we allow
+            // window drag so the bubble keeps acting as a draggable surface.
+            if let canvas = v as? StickerCanvasNSView {
+                return !canvas.isInteractive
+            }
             if v is NSControl { return false }
             current = v.superview
         }
+
+        // Geometric fallback: SwiftUI sometimes interposes a hosting view between the
+        // panel content and our canvas, so the responder-chain walk above doesn't
+        // resolve to a `StickerCanvasNSView`. Scan for any interactive canvas in the
+        // panel and check whether the click point is inside its frame in window
+        // coordinates — defends against the "drag bleeds when image is at the edge of
+        // its pan range" failure mode where the cursor sits over a SwiftUI view above
+        // the canvas.
+        if let content = panel.contentView, let event = NSApp.currentEvent {
+            let inWindow = event.locationInWindow
+            if anyInteractiveCanvasContains(windowPoint: inWindow, root: content) {
+                return false
+            }
+        }
+
         return true
+    }
+
+    private func anyInteractiveCanvasContains(windowPoint: NSPoint, root: NSView) -> Bool {
+        if let canvas = root as? StickerCanvasNSView, canvas.isInteractive {
+            let local = canvas.convert(windowPoint, from: nil)
+            if canvas.bounds.contains(local) { return true }
+        }
+        for sub in root.subviews {
+            if anyInteractiveCanvasContains(windowPoint: windowPoint, root: sub) { return true }
+        }
+        return false
     }
 }

@@ -19,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.mainMenu = buildMainMenu()
 
         DispatchQueue.main.async { [weak self] in
-            guard let self, let bc = self.bubbleController, !bc.model.isSignedIn else { return }
+            guard let self, let bc = self.bubbleController, !bc.model.isSignedInToMatrix else { return }
             self.openAccountAndSync()
         }
 
@@ -43,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let bar = NSMenu()
 
         let appPullDown = NSMenuItem()
-        appPullDown.title = "StickerPost"
+        appPullDown.title = "ThumbDrop"
         appPullDown.submenu = buildAppMenu()
         bar.addItem(appPullDown)
 
@@ -64,7 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         appMenu.addItem(withTitle: "Settings…", action: #selector(openAccountAndSync), keyEquivalent: "")
         appMenu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit StickerPost", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "Quit ThumbDrop", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         for item in appMenu.items {
             guard !item.isSeparatorItem, let action = item.action else { continue }

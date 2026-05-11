@@ -5,7 +5,6 @@ enum WebStickerProvider: String, CaseIterable, Identifiable {
     case redditMemes = "Reddit · r/memes"
     case redditReaction = "Reddit · r/reactiongifs"
     case giphy = "Giphy"
-    case klipy = "Klipy"
 
     var id: String { rawValue }
 
@@ -13,14 +12,12 @@ enum WebStickerProvider: String, CaseIterable, Identifiable {
 
     var isGiphy: Bool { self == .giphy }
 
-    var isKlipy: Bool { self == .klipy }
-
     var subreddit: String? {
         switch self {
         case .redditGifs: return "gifs"
         case .redditMemes: return "memes"
         case .redditReaction: return "reactiongifs"
-        case .giphy, .klipy: return nil
+        case .giphy: return nil
         }
     }
 
@@ -28,7 +25,6 @@ enum WebStickerProvider: String, CaseIterable, Identifiable {
     var searchPlaceholder: String {
         switch self {
         case .giphy: return "Search Giphy (empty for trending)"
-        case .klipy: return "Search Klipy (empty for trending)"
         default: return "Search \(rawValue) (empty for hot)"
         }
     }

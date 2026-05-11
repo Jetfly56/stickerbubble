@@ -1,5 +1,5 @@
-APP      = StickerPost
-TARGET   = StickerPost
+APP      = ThumbDrop
+TARGET   = ThumbDrop
 BUNDLE   = $(APP).app
 BINARY   = .build/release/$(TARGET)
 UPDATER  = Sources/$(TARGET)/AppUpdater.swift
@@ -38,7 +38,7 @@ app: $(BINARY) AppIcon.icns
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n\
 <plist version="1.0"><dict>\n\
   <key>CFBundleExecutable</key>      <string>$(APP)</string>\n\
-  <key>CFBundleIdentifier</key>      <string>com.stickerbubble.app</string>\n\
+  <key>CFBundleIdentifier</key>      <string>com.thumbdrop.app</string>\n\
   <key>CFBundleName</key>            <string>$(APP)</string>\n\
   <key>CFBundleDisplayName</key>     <string>$(APP)</string>\n\
   <key>CFBundleIconFile</key>        <string>AppIcon</string>\n\

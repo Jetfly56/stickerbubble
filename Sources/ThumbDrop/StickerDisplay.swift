@@ -10,7 +10,7 @@ enum StickerCardLayout {
     static var mediaTargetWidth: CGFloat { defaultFrameWidth * 0.9 }
 }
 
-private enum MediaNaturalSize {
+enum MediaNaturalSize {
     static func logicalSize(for image: NSImage) -> CGSize {
         let s = image.size
         if s.width >= 2, s.height >= 2 {
@@ -48,6 +48,21 @@ private enum MediaNaturalSize {
 struct StickerDisplay: View {
     let source: StickerSource
     @Binding var expanded: Bool
+    /// Reference holder shared with `BubbleModel`. The canvas writes directly to this in
+    /// its mouse / pinch / scroll handlers, bypassing `@Published`, so transforms during
+    /// gestures don't re-render the rest of the bubble.
+    var transform: StickerTransformHolder = StickerTransformHolder()
+    /// Bumped by the model when something *external* changes the holder (e.g. an inbox
+    /// message being loaded into the bubble, or a zoom button click). The canvas wrapper
+    /// observes this via `updateNSView` and re-applies the holder transform.
+    var transformNonce: Int = 0
+    /// Flips the bubble into a stripped-down editing mode.
+    var isEditing: Binding<Bool> = .constant(false)
+    /// Bumps the model's `stickerTransformNonce` so views observing the nonce (e.g. the
+    /// zoom slider) resync from the holder when the canvas finishes a continuous gesture.
+    var onTransformBumped: () -> Void = {}
+
+    @State private var canvasController = StickerCanvasController()
 
     var body: some View {
         Group {
@@ -56,34 +71,115 @@ struct StickerDisplay: View {
                 if let service = MusicLinkService(url: url) {
                     MusicLinkCard(url: url, service: service)
                 } else if let image = NSImage(contentsOf: url) {
-                    let dims = MediaNaturalSize.displaySize(forBitmap: image)
-                    let natural = MediaNaturalSize.logicalSize(for: image)
-                    let isCropped = natural.width > dims.width + 0.5 || natural.height > dims.height + 0.5
-                    AnimatedStickerImage(source: .url(url), scaling: expanded ? .scaleProportionallyUpOrDown : .scaleNone)
-                        .frame(width: dims.width, height: dims.height)
-                        .onTapGesture(count: 2) { expanded.toggle() }
-                        .overlay(alignment: .topTrailing) {
-                            if isCropped { scalingToggleButton }
-                        }
+                    canvasImage(image)
                 } else {
                     missing
                 }
 
             case .image(let image):
-                let dims = MediaNaturalSize.displaySize(forBitmap: image)
-                let natural = MediaNaturalSize.logicalSize(for: image)
-                let isCropped = natural.width > dims.width + 0.5 || natural.height > dims.height + 0.5
-                AnimatedStickerImage(source: .image(image), scaling: expanded ? .scaleProportionallyUpOrDown : .scaleNone)
-                    .frame(width: dims.width, height: dims.height)
-                    .onTapGesture(count: 2) { expanded.toggle() }
-                    .overlay(alignment: .topTrailing) {
-                        if isCropped { scalingToggleButton }
-                    }
+                canvasImage(image)
 
             case .text(let string):
                 textSticker(string)
             }
         }
+    }
+
+    // MARK: - Image rendering via the AppKit canvas
+
+    @ViewBuilder
+    private func canvasImage(_ image: NSImage) -> some View {
+        let dims = MediaNaturalSize.displaySize(forBitmap: image)
+        let natural = MediaNaturalSize.logicalSize(for: image)
+        let naturallyOversized = natural.width > dims.width + 0.5 || natural.height > dims.height + 0.5
+        let canShowControls = naturallyOversized || isEditing.wrappedValue || transform.scale > 1.0 + 0.001
+
+        StickerCanvasView(
+            image: image,
+            naturalSize: natural,
+            frameSize: dims,
+            transform: transform,
+            nonce: transformNonce,
+            isEditing: isEditing.wrappedValue,
+            animates: !isEditing.wrappedValue,
+            expanded: expanded,
+            // Double-click is handled inside the canvas via `event.clickCount == 2`, not
+            // by a SwiftUI tap gesture — that gesture sits on the initial mouseDown to
+            // disambiguate, making drags feel laggy.
+            onDoubleClick: { expanded.toggle() },
+            onInteractionEnded: onTransformBumped,
+            controller: canvasController
+        )
+        .frame(width: dims.width, height: dims.height)
+        .overlay(alignment: .topTrailing) {
+            if canShowControls {
+                VStack(spacing: 6) {
+                    if !expanded {
+                        zoomButton(
+                            systemName: isEditing.wrappedValue ? "checkmark.circle.fill" : "pencil.circle.fill",
+                            help: isEditing.wrappedValue ? "Done editing" : "Edit pan & zoom"
+                        ) {
+                            isEditing.wrappedValue.toggle()
+                        }
+                        // Slider only visible in edit mode — pan/zoom are locked otherwise.
+                        if isEditing.wrappedValue {
+                            zoomSlider(natural: natural, dims: dims)
+                        }
+                    }
+                    // Scale-to-fit toggle hides in edit mode (incompatible with explicit
+                    // pan/zoom) but is still shown for normal viewing and for revert.
+                    if !isEditing.wrappedValue {
+                        scalingToggleButton
+                    }
+                }
+                .padding(6)
+            }
+        }
+    }
+
+    /// Vertical zoom slider. The slider's binding writes scale through the
+    /// `StickerCanvasController`, which calls into the canvas directly — bypassing
+    /// `@Published` state so a slider drag updates the CALayer transform without
+    /// re-rendering the rest of the bubble.
+    ///
+    /// `transform.scale` is read on body re-evaluation to drive the visual thumb position.
+    /// Body re-evaluates whenever `transformNonce` bumps (after a drag/pinch/scroll ends),
+    /// so the thumb resyncs after non-slider gestures. The slider's low end is clamped to
+    /// the fit-to-frame scale so zooming out can't shrink the image smaller than the
+    /// viewer (matches the canvas's `effectiveMinScale`).
+    private func zoomSlider(natural: CGSize, dims: CGSize) -> some View {
+        let fit = dims.width / max(natural.width, 1)
+        let minS = Double(min(1.0, max(StickerCanvasNSView.minScale, fit)))
+        let maxS = Double(StickerCanvasNSView.maxScale)
+        return Slider(
+            value: Binding<Double>(
+                get: { Double(transform.scale).clamped(minS, maxS) },
+                set: { newVal in canvasController.setScale(CGFloat(newVal)) }
+            ),
+            in: minS ... maxS
+        )
+        .controlSize(.mini)
+        .frame(width: 90)
+        .rotationEffect(.degrees(-90))
+        .frame(width: 26, height: 96)
+        .help("Zoom")
+    }
+
+    private func zoomButton(systemName: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 15, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
+                .background {
+                    Circle()
+                        .fill(Color(white: 0.0, opacity: 0.35))
+                        .frame(width: 26, height: 26)
+                        .allowsHitTesting(false)
+                }
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     private var scalingToggleButton: some View {
@@ -106,6 +202,8 @@ struct StickerDisplay: View {
             .padding(36)
             .frame(width: StickerCardLayout.mediaTargetWidth)
     }
+
+    // MARK: - Text stickers (unchanged)
 
     @ViewBuilder
     private func textSticker(_ string: String) -> some View {
@@ -152,20 +250,40 @@ struct StickerDisplay: View {
         return s
     }
 
+    /// Peels any of `$$…$$`, `\[…\]`, `\(…\)`, or `$…$` (in any order, possibly nested)
+    /// so KaTeX receives raw math without surrounding delimiters.
     private static func stripFormulaFences(_ text: String) -> String {
         var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if s.hasPrefix("$$") { s.removeFirst(2) }
-        if s.hasSuffix("$$") { s.removeLast(2) }
-        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pairs: [(String, String)] = [("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)")]
+        var changed = true
+        while changed {
+            changed = false
+            for (open, close) in pairs where s.hasPrefix(open) && s.hasSuffix(close) && s.count >= open.count + close.count {
+                s = String(s.dropFirst(open.count).dropLast(close.count))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                changed = true
+                break
+            }
+            if !changed, s.count >= 2, s.hasPrefix("$"), s.hasSuffix("$"), !s.hasPrefix("$$") {
+                s = String(s.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+                changed = true
+            }
+        }
+        return s
     }
 
     static func classify(_ text: String) -> TextStickerKind {
         if text.contains("```") { return .code }
         if text.contains("$$") { return .formula }
+        if text.contains("\\[") && text.contains("\\]") { return .formula }
+        if text.contains("\\(") && text.contains("\\)") { return .formula }
+        if isLikelyCode(text) { return .code }
+        if isLikelyFormula(text) { return .formula }
         return .plain
     }
 
-    /// Auto-detect kind for paste-time wrapping. Conservative — only wraps when there are strong signals.
+    /// Auto-detect kind for paste-time wrapping. Conservative — only wraps when there are
+    /// strong signals (called by `BubbleModel.wrapForDetectedKind`).
     static func autoDetectKind(_ text: String) -> TextStickerKind {
         let latexCommands = ["\\frac", "\\sum", "\\int", "\\sqrt", "\\prod", "\\lim",
                              "\\binom", "\\begin{", "\\end{", "\\left", "\\right",
@@ -187,6 +305,34 @@ struct StickerDisplay: View {
         return .plain
     }
 
+    private static func isLikelyCode(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return false }
+        if trimmed.contains("\n") { return true }
+        if trimmed.contains(";") { return true }
+        if trimmed.contains("=>") { return true }
+        if trimmed.contains("->") { return true }
+        if trimmed.contains("<-") { return true }
+        let kw = ["function ", "def ", "class ", "import ", "return ",
+                  "let ", "var ", "const ", "if (", "if(", "for (", "for(", "while (", "while(",
+                  "struct ", "enum ", "protocol ", "guard ", "switch ", "case "]
+        for k in kw where trimmed.contains(k) { return true }
+        let braces = trimmed.contains("{") || trimmed.contains("}")
+        let parens = trimmed.contains("(") && trimmed.contains(")")
+        if braces, parens { return true }
+        return false
+    }
+
+    private static func isLikelyFormula(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return false }
+        if trimmed.contains("\\frac") || trimmed.contains("\\sum") || trimmed.contains("\\int") { return true }
+        if trimmed.contains("\\sqrt") || trimmed.contains("\\alpha") || trimmed.contains("\\beta") { return true }
+        let opCount = trimmed.filter { "=+−-±×÷⋅∙/^≤≥≠≈∞∑∫∂".contains($0) }.count
+        if opCount >= 2, trimmed.count <= 80 { return true }
+        return false
+    }
+
     private static func fontSize(forEmoji text: String) -> CGFloat {
         let n = max(1, text.count)
         if n <= 2 { return 96 }
@@ -196,62 +342,7 @@ struct StickerDisplay: View {
     }
 }
 
-private enum AnimatedStickerSource {
-    case url(URL)
-    case image(NSImage)
-}
-
-private struct AnimatedStickerImage: NSViewRepresentable {
-    let source: AnimatedStickerSource
-    var scaling: NSImageScaling = .scaleNone
-
-    func makeNSView(context: Context) -> StickerSizedImageView {
-        let view = StickerSizedImageView()
-        configure(view)
-        return view
-    }
-
-    func updateNSView(_ view: StickerSizedImageView, context: Context) {
-        configure(view)
-    }
-
-    private func configure(_ view: StickerSizedImageView) {
-        switch source {
-        case .url(let u):
-            view.image = NSImage(contentsOf: u)
-        case .image(let img):
-            view.image = img
-        }
-        view.imageScaling = scaling
-        view.useFrameAsAuthoritativeSize = (scaling != .scaleNone)
-        view.invalidateIntrinsicContentSize()
-        view.animates = true
-    }
-}
-
-private final class StickerSizedImageView: NSImageView {
-    var useFrameAsAuthoritativeSize = false
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        translatesAutoresizingMaskIntoConstraints = false
-        imageAlignment = .alignCenter
-        animates = true
-        wantsLayer = true
-        layer?.masksToBounds = true
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override var intrinsicContentSize: NSSize {
-        if useFrameAsAuthoritativeSize {
-            return NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
-        }
-        return super.intrinsicContentSize
-    }
-}
+// MARK: - LaTeX formula view (unchanged)
 
 struct LatexFormulaView: NSViewRepresentable {
     let source: String
@@ -315,4 +406,10 @@ struct LatexFormulaView: NSViewRepresentable {
 
 final class NonFocusingWebView: WKWebView {
     override var acceptsFirstResponder: Bool { false }
+}
+
+private extension Double {
+    func clamped(_ lo: Double, _ hi: Double) -> Double {
+        Swift.max(lo, Swift.min(hi, self))
+    }
 }

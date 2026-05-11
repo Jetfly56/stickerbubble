@@ -72,7 +72,7 @@ final class MusicLinkLoader: ObservableObject {
         defer { Task { @MainActor in if self.loadedKey == key { self.isLoading = false } } }
         do {
             var req = URLRequest(url: url)
-            req.setValue("Mozilla/5.0 (Macintosh) StickerBubble/1.0", forHTTPHeaderField: "User-Agent")
+            req.setValue("Mozilla/5.0 (Macintosh) ThumbDrop/1.0", forHTTPHeaderField: "User-Agent")
             req.setValue("text/html,*/*", forHTTPHeaderField: "Accept")
             let (data, _) = try await URLSession.shared.data(for: req)
             guard let html = String(data: data, encoding: .utf8) else { throw URLError(.cannotParseResponse) }

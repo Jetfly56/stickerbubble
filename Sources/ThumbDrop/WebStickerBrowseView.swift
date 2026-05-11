@@ -62,9 +62,13 @@ struct WebStickerBrowseSheet: View {
                                     onPick(item.mediaURL)
                                     dismiss()
                                 } label: {
-                                    WebStickerThumbnailCell(url: item.previewURL ?? item.mediaURL, title: item.title)
-                                        .aspectRatio(1, contentMode: .fill)
-                                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    WebStickerThumbnailCell(
+                                        url: item.previewURL ?? item.mediaURL,
+                                        title: item.title,
+                                        onFailure: { state.removeRow(id: item.id) }
+                                    )
+                                    .aspectRatio(1, contentMode: .fill)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                                 }
                                 .buttonStyle(.plain)
                                 .help(item.title)
@@ -75,12 +79,6 @@ struct WebStickerBrowseSheet: View {
 
                     if state.provider.isGiphy {
                         Link("Powered by Giphy — API terms apply", destination: URL(string: "https://developers.giphy.com/explainer/")!)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-
-                    if state.provider.isKlipy {
-                        Link("Powered by Klipy — API terms apply", destination: URL(string: "https://klipy.com/terms")!)
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
@@ -118,12 +116,16 @@ final class WebStickerBrowseState: ObservableObject {
     @Published private(set) var isBusy = false
     @Published private(set) var status: String?
 
+    func removeRow(id: String) {
+        rows.removeAll { $0.id == id }
+    }
+
     private var didInitialLoad = false
 
     func refreshInitialIfNeeded() {
         guard !didInitialLoad else { return }
         didInitialLoad = true
-        apiKeyDraft = UserDefaults.standard.string(forKey: "StickerBubble.giphyAPIKey") ?? ""
+        apiKeyDraft = UserDefaults.standard.string(forKey: "ThumbDrop.giphyAPIKey") ?? ""
         refresh()
     }
 
@@ -164,6 +166,7 @@ final class WebStickerBrowseState: ObservableObject {
 private struct WebStickerThumbnailCell: View {
     let url: URL
     var title: String
+    var onFailure: () -> Void = {}
 
     var body: some View {
         AsyncImage(url: url) { phase in
@@ -172,8 +175,7 @@ private struct WebStickerThumbnailCell: View {
                 Rectangle().fill(Color.gray.opacity(0.15))
                     .overlay { ProgressView() }
             case .failure:
-                Rectangle().fill(Color.gray.opacity(0.2))
-                    .overlay { Image(systemName: "photo") }
+                Color.clear.onAppear { onFailure() }
             case .success(let image):
                 image
                     .resizable()

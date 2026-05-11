@@ -3,7 +3,7 @@ import Foundation
 
 @MainActor
 final class AppUpdater {
-    static let currentVersion = "1.1.0"
+    static let currentVersion = "1.1.3"
 
     private static let apiURL = URL(
         string: "https://api.github.com/repos/Jetfly56/stickerbubble/releases/latest"
@@ -30,7 +30,7 @@ final class AppUpdater {
                     }
                     offerInstall(version: tag, downloadURL: asset.browserDownloadUrl)
                 } else if !silent {
-                    showAlert("StickerPost \(Self.currentVersion) is up to date.")
+                    showAlert("ThumbDrop \(Self.currentVersion) is up to date.")
                 }
             } catch {
                 if !silent {
@@ -55,7 +55,7 @@ final class AppUpdater {
 
     private func offerInstall(version: String, downloadURL: String) {
         let a = NSAlert()
-        a.messageText = "StickerPost \(version) Available"
+        a.messageText = "ThumbDrop \(version) Available"
         a.informativeText = "You have version \(Self.currentVersion). Install update and relaunch?"
         a.addButton(withTitle: "Install Update")
         a.addButton(withTitle: "Later")
@@ -72,7 +72,7 @@ final class AppUpdater {
             do {
                 let (tempURL, _) = try await URLSession.shared.download(from: url)
                 let zipDest = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("StickerBubble-update.zip")
+                    .appendingPathComponent("ThumbDrop-update.zip")
                 try? FileManager.default.removeItem(at: zipDest)
                 try FileManager.default.moveItem(at: tempURL, to: zipDest)
                 progressWindow.close()
@@ -93,7 +93,7 @@ final class AppUpdater {
             backing: .buffered,
             defer: false
         )
-        w.title = "StickerPost Update"
+        w.title = "ThumbDrop Update"
         w.level = .modalPanel
         w.isReleasedWhenClosed = false
         w.center()
@@ -118,7 +118,7 @@ final class AppUpdater {
         }
 
         let extractDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("StickerBubble-update-extracted")
+            .appendingPathComponent("ThumbDrop-update-extracted")
         try? FileManager.default.removeItem(at: extractDir)
         try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: true)
 
@@ -149,7 +149,7 @@ final class AppUpdater {
         let tmp = FileManager.default.temporaryDirectory
 
         // Separate copy script so osascript admin escalation needs no path escaping.
-        let copyScriptURL = tmp.appendingPathComponent("stickerbubble-copy.sh")
+        let copyScriptURL = tmp.appendingPathComponent("thumbdrop-copy.sh")
         let copyScript = """
         #!/bin/bash
         rm -rf '\(installPath)'
@@ -171,7 +171,7 @@ final class AppUpdater {
         rm -rf '\(cleanupPath)'
         """
 
-        let scriptURL = tmp.appendingPathComponent("stickerbubble-install.sh")
+        let scriptURL = tmp.appendingPathComponent("thumbdrop-install.sh")
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
 

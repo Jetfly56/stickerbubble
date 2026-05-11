@@ -60,15 +60,13 @@ struct ChatBubbleView: View {
             .sheet(isPresented: $showAddContactModal) {
                 AddContactModalView(model: model, onAddedSuccessfully: {
                     Task { @MainActor in
-                        await model.refreshRemoteContacts()
-                        await model.refreshContactRequests()
-                        if !model.remoteContacts.isEmpty {
+                        if !model.matrixContacts.isEmpty {
                             showContactPickModal = true
                         }
                     }
                 })
                 .onAppear {
-                    model.lastRailwayError = nil
+                    model.lastError = nil
                 }
             }
             .sheet(isPresented: $showContactPickModal) {
@@ -80,12 +78,6 @@ struct ChatBubbleView: View {
             .onAppear {
                 DispatchQueue.main.async {
                     isEmojiFieldFocused = true
-                }
-                Task {
-                    if model.isSignedIn {
-                        await model.refreshRemoteContacts()
-                        await model.refreshContactRequests()
-                    }
                 }
             }
     }
@@ -100,53 +92,47 @@ struct ChatBubbleView: View {
                     .textCase(.uppercase)
                 Spacer(minLength: 4)
                 Button {
-                    refreshContactsThenOpenPicker()
+                    showContactPickModal = true
                 } label: {
                     Image(systemName: "person.2.circle.fill")
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(
-                            model.isSignedIn && !model.remoteContacts.isEmpty ? Color.accentColor : Color.secondary
+                            model.isSignedInToMatrix && !model.matrixContacts.isEmpty ? Color.accentColor : Color.secondary
                         )
                 }
                 .buttonStyle(.plain)
                 .help("Choose contact…")
                 .accessibilityLabel("Choose contact")
-                .disabled(!model.isSignedIn || model.remoteContacts.isEmpty)
-                .opacity(model.isSignedIn && !model.remoteContacts.isEmpty ? 1 : 0.45)
+                .disabled(!model.isSignedInToMatrix || model.matrixContacts.isEmpty)
+                .opacity(model.isSignedInToMatrix && !model.matrixContacts.isEmpty ? 1 : 0.45)
 
                 Button {
                     showAddContactModal = true
                 } label: {
                     Image(systemName: "person.badge.plus")
                         .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(model.isSignedIn ? Color.accentColor : Color.secondary)
+                        .foregroundStyle(model.isSignedInToMatrix ? Color.accentColor : Color.secondary)
                 }
                 .buttonStyle(.plain)
                 .help("Add contact…")
                 .accessibilityLabel("Add contact")
-                .disabled(!model.isSignedIn)
-                .opacity(model.isSignedIn ? 1 : 0.45)
+                .disabled(!model.isSignedInToMatrix)
+                .opacity(model.isSignedInToMatrix ? 1 : 0.45)
             }
 
-            if !model.isSignedIn {
-                Text("Sign in via Settings (person button above, or menu). Typing here updates the preview only until you’re signed in.")
+            if !model.isSignedInToMatrix {
+                Text("Sign in to Matrix via Settings (person button above, or menu). Typing here updates the preview only until you’re signed in.")
                     .font(.system(.caption, design: .rounded))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            } else if model.remoteContacts.isEmpty {
-                Text(
-                    model.railwayBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        ? "Open Settings and set your server URL, then add contacts by user ID."
-                        : (model.incomingContactRequests.isEmpty && model.outgoingContactRequests.isEmpty
-                            ? "No contacts yet — tap person + beside Send to (or use Settings) to invite someone by user ID."
-                            : "No accepted contacts yet — open Settings (person icon) to accept an invite or see outgoing requests.")
-                )
-                .font(.system(.caption, design: .rounded))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            } else if model.matrixContacts.isEmpty {
+                Text("No Matrix contacts yet — tap person + to add someone by their MXID (e.g. @alice:matrix.org).")
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
                 let favorites = model.favoriteContactsForBubbleBar()
-                if favorites.isEmpty && !model.sendToSelfEnabled {
+                if favorites.isEmpty {
                     Text("Open Contacts (two-person icon) and tap the star on someone to pin them here for quick send.")
                         .font(.system(.caption2, design: .rounded))
                         .foregroundStyle(.tertiary)
@@ -154,20 +140,17 @@ struct ChatBubbleView: View {
                 } else {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
-                            if model.sendToSelfEnabled {
-                                meChip
-                            }
-                            ForEach(favorites, id: \.peerUserId) { c in
+                            ForEach(favorites, id: \.peerMxid) { c in
                                 favoriteContactChip(c)
                             }
                         }
                     }
                 }
 
-                if !model.selectedPeerUserId.isEmpty {
+                if !model.selectedPeerMxid.isEmpty {
                     let pickLabel =
-                        model.remoteContacts.first { $0.peerUserId == model.selectedPeerUserId }?.displayName
-                            ?? model.selectedPeerUserId
+                        model.matrixContacts.first { $0.peerMxid == model.selectedPeerMxid }?.displayName
+                            ?? model.selectedPeerMxid
                     Text("Sending to \(pickLabel)")
                         .font(.system(.caption2, design: .rounded))
                         .foregroundStyle(.secondary)
@@ -175,20 +158,21 @@ struct ChatBubbleView: View {
                 }
             }
 
-            if let err = model.lastRailwayError, !err.isEmpty {
+            if let err = model.lastError, !err.isEmpty {
                 Text(err)
                     .font(.system(.caption2, design: .rounded))
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
-
-            if let note = model.contactInviteNotice, !note.isEmpty, model.isSignedIn {
-                Text(note)
-                    .font(.system(.caption2, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
         }
+    }
+
+    /// Bottom padding for the sticker card. Drops to receive-mode size while editing,
+    /// since the Send-to / emoji / send chrome is hidden in that mode.
+    private var bottomPaddingForCard: CGFloat {
+        if model.isReceivingMode { return 44 }
+        if model.isEditingTransform { return 44 }
+        return 240
     }
 
     /// Card uses fixed **default frame width**; GIF is laid out at 90% of that inside `StickerDisplay`.
@@ -199,21 +183,28 @@ struct ChatBubbleView: View {
                     codeBlockEditor
                         .padding(.horizontal, 12)
                         .padding(.top, 44)
-                        .padding(.bottom, model.isReceivingMode ? 44 : 240)
+                        .padding(.bottom, bottomPaddingForCard)
                 } else {
-                    StickerDisplay(source: source, expanded: $model.stickerExpanded)
+                    StickerDisplay(
+                        source: source,
+                        expanded: $model.stickerExpanded,
+                        transform: model.stickerTransform,
+                        transformNonce: model.stickerTransformNonce,
+                        isEditing: $model.isEditingTransform,
+                        onTransformBumped: { [weak model] in model?.bumpStickerTransformNonce() }
+                    )
                         .simultaneousGesture(TapGesture().onEnded {
                             isEmojiFieldFocused = false
                         })
                         .padding(.horizontal, 12)
                         .padding(.top, 44)
-                        .padding(.bottom, model.isReceivingMode ? 44 : 240)
+                        .padding(.bottom, bottomPaddingForCard)
                 }
             } else {
                 emptyDropZone
                     .padding(.horizontal, 12)
                     .padding(.top, 40)
-                    .padding(.bottom, model.isReceivingMode ? 40 : 228)
+                    .padding(.bottom, model.isReceivingMode ? 40 : (model.isEditingTransform ? 40 : 228))
             }
         }
         .frame(width: StickerCardLayout.defaultFrameWidth)
@@ -243,17 +234,11 @@ struct ChatBubbleView: View {
                             .foregroundStyle(isSettingsHovered ? Color.purple : Color.secondary)
                             .font(.system(size: 18, weight: .medium))
                             .diffuseCircleBackdrop()
-                        if !model.incomingContactRequests.isEmpty {
-                            Circle()
-                                .fill(Color.red.opacity(0.95))
-                                .frame(width: 7, height: 7)
-                                .offset(x: 3, y: -2)
-                        }
                     }
                 }
                 .buttonStyle(.plain)
                 .onHover { isSettingsHovered = $0 }
-                .help("Settings — account, server, contacts, inbox")
+                .help("Settings — Matrix account, contacts, inbox")
 
                 Button {
                     model.globallyMuted.toggle()
@@ -352,7 +337,7 @@ struct ChatBubbleView: View {
                     .help("Copy sticker to clipboard")
                 }
 
-                if model.isSignedIn {
+                if model.isSignedInToMatrix {
                     Button {
                         showInboxModal = true
                     } label: {
@@ -378,7 +363,7 @@ struct ChatBubbleView: View {
             .padding(.leading, 76)
         }
         .overlay(alignment: .bottom) {
-            if !model.isReceivingMode {
+            if !model.isReceivingMode, !model.isEditingTransform {
                 VStack(alignment: .leading, spacing: 10) {
                     sendToInnerChrome
 
@@ -586,14 +571,6 @@ struct ChatBubbleView: View {
         }
     }
 
-    /// Latest server list before showing the contact picker (Contacts button or after add).
-    private func refreshContactsThenOpenPicker() {
-        Task {
-            await model.refreshRemoteContacts()
-            showContactPickModal = true
-        }
-    }
-
     private func initials(from name: String) -> String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "?" }
@@ -642,33 +619,11 @@ struct ChatBubbleView: View {
         .padding(.horizontal, 14)
     }
 
-    private var meChip: some View {
-        let selected = model.selectedPeerUserId == model.signedInUserId
-        return Button {
-            model.selectedPeerUserId = model.signedInUserId
-        } label: {
-            Text("Me")
-                .font(.system(.caption, design: .rounded, weight: .semibold))
-                .lineLimit(1)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background {
-                    Capsule()
-                        .fill(selected ? Color.accentColor.opacity(0.22) : Color.primary.opacity(0.06))
-                }
-                .overlay {
-                    Capsule()
-                        .strokeBorder(selected ? Color.accentColor.opacity(0.9) : Color.clear, lineWidth: 1.5)
-                }
-        }
-        .buttonStyle(.plain)
-    }
-
     @ViewBuilder
-    private func favoriteContactChip(_ c: RailwayRemoteContact) -> some View {
-        let selected = model.selectedPeerUserId == c.peerUserId
+    private func favoriteContactChip(_ c: MatrixContact) -> some View {
+        let selected = model.selectedPeerMxid == c.peerMxid
         Button {
-            model.selectedPeerUserId = c.peerUserId
+            model.selectedPeerMxid = c.peerMxid
         } label: {
             Text(c.displayName)
                 .font(.system(.caption, design: .rounded, weight: .semibold))
@@ -699,7 +654,7 @@ extension View {
     }
 }
 
-// MARK: - Add contact modal
+// MARK: - Add Matrix contact modal
 
 private struct AddContactModalView: View {
     @ObservedObject var model: BubbleModel
@@ -707,27 +662,21 @@ private struct AddContactModalView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var displayName = ""
-    @State private var peerUserId = ""
+    @State private var peerMxid = ""
     @State private var isAdding = false
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("Their user ID", text: $peerUserId)
+                    TextField("@alice:matrix.org", text: $peerMxid)
                         .font(.system(.body, design: .monospaced))
-                        .onChange(of: peerUserId) { newVal in
-                            model.scheduleAddContactUserIdLookup(draftRaw: newVal)
-                        }
                     TextField("Display name (optional)", text: $displayName)
-                    AddContactPeerLookupBanner(state: model.addContactPeerLookup)
                 } footer: {
-                    Text(
-                        "This sends them a contact invite — they must accept in Settings before you can choose them to send stickers. Leave name empty to infer from their latest message, when possible."
-                    )
-                    .font(.caption)
+                    Text("ThumbDrop finds an existing 1-1 DM with this peer, or creates a new private invite-only room and invites them. They’ll see the invite in their Matrix client and accept to join.")
+                        .font(.caption)
                 }
-                if let err = model.lastRailwayError, !err.isEmpty {
+                if let err = model.lastError, !err.isEmpty {
                     Section {
                         Text(err)
                             .font(.caption)
@@ -736,37 +685,28 @@ private struct AddContactModalView: View {
                 }
             }
             .formStyle(.grouped)
-            .navigationTitle("Add contact")
-            .onAppear {
-                model.scheduleAddContactUserIdLookup(draftRaw: peerUserId)
-            }
+            .navigationTitle("Add Matrix contact")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        model.clearAddContactUserIdLookup()
-                        dismiss()
-                    }
+                    Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add") {
                         Task {
                             isAdding = true
-                            await model.addRemoteContact(displayName: displayName, peerUserId: peerUserId)
+                            let target = peerMxid.trimmingCharacters(in: .whitespacesAndNewlines)
+                            await model.addMatrixContact(peerMxid: peerMxid, displayName: displayName)
                             isAdding = false
-                            if let err = model.lastRailwayError, !err.isEmpty {
-                                return
-                            }
-                            model.clearAddContactUserIdLookup()
-                            displayName = ""
-                            peerUserId = ""
-                            let notify = onAddedSuccessfully
-                            dismiss()
-                            DispatchQueue.main.async {
-                                notify?()
+                            if model.matrixContacts.contains(where: { $0.peerMxid == target }) {
+                                displayName = ""
+                                peerMxid = ""
+                                let notify = onAddedSuccessfully
+                                dismiss()
+                                DispatchQueue.main.async { notify?() }
                             }
                         }
                     }
-                    .disabled(peerUserId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isAdding)
+                    .disabled(peerMxid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isAdding)
                 }
             }
         }
@@ -783,7 +723,7 @@ private struct ContactPickModalView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if model.remoteContacts.isEmpty {
+                if model.matrixContacts.isEmpty {
                     VStack(spacing: 14) {
                         Image(systemName: "person.crop.circle.badge.plus")
                             .font(.system(size: 44, weight: .light))
@@ -799,17 +739,17 @@ private struct ContactPickModalView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List {
-                        ForEach(model.remoteContacts) { c in
+                        ForEach(model.matrixContacts) { c in
                             HStack(alignment: .center, spacing: 12) {
                                 Button {
-                                    model.selectedPeerUserId = c.peerUserId
+                                    model.selectedPeerMxid = c.peerMxid
                                     dismiss()
                                 } label: {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(c.displayName)
                                             .font(.body.weight(.semibold))
                                             .foregroundStyle(.primary)
-                                        Text(c.peerUserId)
+                                        Text(c.peerMxid)
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                             .monospaced()
@@ -822,23 +762,23 @@ private struct ContactPickModalView: View {
                                 .buttonStyle(.plain)
 
                                 Button {
-                                    model.toggleMutePeer(c.peerUserId)
+                                    model.toggleMutePeer(c.peerMxid)
                                 } label: {
-                                    Image(systemName: model.isPeerMuted(c.peerUserId) ? "bell.slash.fill" : "bell")
+                                    Image(systemName: model.isPeerMuted(c.peerMxid) ? "bell.slash.fill" : "bell")
                                         .font(.system(size: 16, weight: .medium))
-                                        .foregroundStyle(model.isPeerMuted(c.peerUserId) ? Color.orange : Color.secondary)
-                                        .accessibilityLabel(model.isPeerMuted(c.peerUserId) ? "Unmute" : "Mute")
+                                        .foregroundStyle(model.isPeerMuted(c.peerMxid) ? Color.orange : Color.secondary)
+                                        .accessibilityLabel(model.isPeerMuted(c.peerMxid) ? "Unmute" : "Mute")
                                 }
                                 .buttonStyle(.plain)
-                                .help(model.isPeerMuted(c.peerUserId) ? "Unmute — bubble pops when they send" : "Mute — incoming messages won't pop the bubble")
+                                .help(model.isPeerMuted(c.peerMxid) ? "Unmute — bubble pops when they send" : "Mute — incoming messages won't pop the bubble")
 
                                 Button {
-                                    model.toggleFavoritePeer(peerUserId: c.peerUserId)
+                                    model.toggleFavoritePeer(mxid: c.peerMxid)
                                 } label: {
-                                    Image(systemName: model.isFavoritePeer(c.peerUserId) ? "star.fill" : "star")
+                                    Image(systemName: model.isFavoritePeer(c.peerMxid) ? "star.fill" : "star")
                                         .font(.system(size: 18, weight: .medium))
-                                        .foregroundStyle(model.isFavoritePeer(c.peerUserId) ? Color.yellow : Color.secondary)
-                                        .accessibilityLabel(model.isFavoritePeer(c.peerUserId) ? "Remove favorite" : "Add favorite")
+                                        .foregroundStyle(model.isFavoritePeer(c.peerMxid) ? Color.yellow : Color.secondary)
+                                        .accessibilityLabel(model.isFavoritePeer(c.peerMxid) ? "Remove favorite" : "Add favorite")
                                 }
                                 .buttonStyle(.plain)
                                 .help("Favorite — shows as a chip on the bubble")
@@ -851,9 +791,7 @@ private struct ContactPickModalView: View {
             .navigationTitle("Contacts")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") {
-                        dismiss()
-                    }
+                    Button("Done") { dismiss() }
                 }
             }
         }
@@ -1009,7 +947,7 @@ struct InboxTriageModalView: View {
 
                     Spacer()
 
-                    if let err = model.lastRailwayError, !err.isEmpty {
+                    if let err = model.lastError, !err.isEmpty {
                         Text(err)
                             .font(.caption)
                             .foregroundStyle(.red)
@@ -1032,7 +970,7 @@ struct InboxTriageModalView: View {
                 }
             }
             .confirmationDialog(
-                "Delete every message in your inbox?",
+                "Clear every message in your inbox?",
                 isPresented: $showClearConfirm,
                 titleVisibility: .visible
             ) {
@@ -1041,7 +979,7 @@ struct InboxTriageModalView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This permanently removes them from the server for this account.")
+                Text("Removes them from this Mac. New messages from peers will still arrive normally.")
             }
             .task {
                 if model.inboxTriageList.isEmpty {
@@ -1066,7 +1004,7 @@ struct InboxTriageModalView: View {
 
 private struct InboxTriageRow: View {
     @ObservedObject var model: BubbleModel
-    let msg: RailwayInboxMessage
+    let msg: InboxMessage
     let onView: () -> Void
 
     var body: some View {
